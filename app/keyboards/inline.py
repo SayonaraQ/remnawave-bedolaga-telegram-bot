@@ -2135,11 +2135,13 @@ def get_device_selection_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKey
         ],
         [
             InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_WINDOWS", "💻 Windows"), callback_data="device_guide_windows"),
-            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_MAC", "🎯 macOS"), callback_data="device_guide_mac")
+            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_MAC", "🍏 MacOS"), callback_data="device_guide_mac")
         ],
         [
-            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_ANDROID_TV", "📺 Android TV"), callback_data="device_guide_tv"),
-            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_APPLE_TV", "📺 Apple TV"), callback_data="device_guide_appletv")
+            InlineKeyboardButton(
+                text=texts.t("DEVICE_GUIDE_LINUX", "🐧 Linux"), callback_data="device_guide_linux",
+                text=texts.t("DEVICE_GUIDE_TV_GROUP", "📺 Телевизоры"), callback_data="device_guide_tvs"
+            ),
         ]
     ]
     
@@ -2154,6 +2156,27 @@ def get_device_selection_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKey
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+def get_tv_selection_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+    """Подменю выбора платформы ТВ (Android TV / Apple TV)."""
+    texts = get_texts(language)
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=texts.t("DEVICE_GUIDE_ANDROID_TV", "📺 Android TV"),
+                callback_data="device_guide_tv",
+            ),
+            InlineKeyboardButton(
+                text=texts.t("DEVICE_GUIDE_APPLE_TV", "📺 Apple TV"),
+                callback_data="device_guide_appletv",
+            ),
+        ],
+        [
+            InlineKeyboardButton(text=texts.BACK, callback_data="subscription_connect"),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_connection_guide_keyboard(
     subscription_url: str,

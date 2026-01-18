@@ -34,7 +34,7 @@ from app.keyboards.inline import (
     get_add_traffic_keyboard,
     get_change_devices_keyboard, get_reset_traffic_confirm_keyboard,
     get_manage_countries_keyboard,
-    get_device_selection_keyboard, get_connection_guide_keyboard,
+    get_device_selection_keyboard, get_tv_selection_keyboard, get_connection_guide_keyboard,
     get_app_selection_keyboard, get_specific_app_keyboard,
     get_updated_subscription_settings_keyboard, get_insufficient_balance_keyboard,
     get_extend_subscription_keyboard_with_prices, get_confirm_change_devices_keyboard,
@@ -1162,6 +1162,18 @@ async def handle_device_guide(
 ):
     device_type = callback.data.split('_')[2]
     texts = get_texts(db_user.language)
+    if device_type == "tvs":
+        await callback.message.edit_text(
+            texts.t(
+                "DEVICE_GUIDE_TV_GROUP_MESSAGE",
+                "📺 <b>Телевизоры</b>\n\nВыберите платформу вашего ТВ:",
+            ),
+            reply_markup=get_tv_selection_keyboard(db_user.language),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     subscription = db_user.subscription
     subscription_link = get_display_subscription_link(subscription)
 
@@ -1201,7 +1213,7 @@ async def handle_device_guide(
                 + "\n"
                 + texts.t(
             "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
-            "ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе \"Моя подписка\".",
+            "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» ниже или в разделе \"Моя подписка\".",
         )
                 + "\n\n"
         )
@@ -1263,27 +1275,27 @@ async def handle_device_guide(
     if connect_description:
         guide_text += f"\n{connect_description}"
 
-    guide_text += "\n\n" + texts.t("SUBSCRIPTION_DEVICE_HOW_TO_TITLE", "💡 <b>Как подключить:</b>")
-    guide_text += "\n" + "\n".join(
-        [
-            texts.t(
-                "SUBSCRIPTION_DEVICE_HOW_TO_STEP1",
-                "1. Установите приложение по ссылке выше",
-            ),
-            texts.t(
-                "SUBSCRIPTION_DEVICE_HOW_TO_STEP2",
-                "2. Нажмите кнопку \"Подключиться\" ниже",
-            ),
-            texts.t(
-                "SUBSCRIPTION_DEVICE_HOW_TO_STEP3",
-                "3. Откройте приложение и вставьте ссылку",
-            ),
-            texts.t(
-                "SUBSCRIPTION_DEVICE_HOW_TO_STEP4",
-                "4. Подключитесь к серверу",
-            ),
-        ]
-    )
+#    guide_text += "\n\n" + texts.t("SUBSCRIPTION_DEVICE_HOW_TO_TITLE", "💡 <b>Как подключить:</b>")
+#    guide_text += "\n" + "\n".join(
+#        [
+#            texts.t(
+#                "SUBSCRIPTION_DEVICE_HOW_TO_STEP1",
+#                "1. Установите приложение по ссылке выше",
+#            ),
+#            texts.t(
+#                "SUBSCRIPTION_DEVICE_HOW_TO_STEP2",
+#                "2. Нажмите кнопку \"Подключиться\" ниже",
+#            ),
+#            texts.t(
+#                "SUBSCRIPTION_DEVICE_HOW_TO_STEP3",
+#                "3. Откройте приложение и вставьте ссылку",
+#            ),
+#            texts.t(
+#                "SUBSCRIPTION_DEVICE_HOW_TO_STEP4",
+#                "4. Подключитесь к серверу",
+#            ),
+#        ]
+#    )
 
     if additional_after_text:
         guide_text += f"\n\n{additional_after_text}"
@@ -1371,7 +1383,7 @@ async def handle_specific_app_guide(
                 + "\n"
                 + texts.t(
             "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
-            "ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе \"Моя подписка\".",
+            "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» или в разделе \"Моя подписка\".",
         )
                 + "\n\n"
         )
