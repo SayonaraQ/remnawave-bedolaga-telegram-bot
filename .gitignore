@@ -37,3 +37,6 @@ app/**/*.pyd
 *.pyc
 *.pyo
 *.pyd
+
+# backups
+*.bak
