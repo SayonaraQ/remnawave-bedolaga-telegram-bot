@@ -2155,10 +2155,8 @@ def get_device_selection_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKey
             InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_MAC", "🍏 MacOS"), callback_data="device_guide_mac")
         ],
         [
-            InlineKeyboardButton(
-                text=texts.t("DEVICE_GUIDE_LINUX", "🐧 Linux"), callback_data="device_guide_linux",
-                text=texts.t("DEVICE_GUIDE_TV_GROUP", "📺 Телевизоры"), callback_data="device_guide_tvs"
-            ),
+            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_LINUX", "🐧 Linux"), callback_data="device_guide_linux"),
+            InlineKeyboardButton(text=texts.t("DEVICE_GUIDE_TV_GROUP", "📺 Телевизоры"), callback_data="device_guide_tvs")
         ]
     ]
     
