@@ -771,6 +771,13 @@ def _get_trial_payment_keyboard(language: str, can_pay_from_balance: bool = Fals
             callback_data="trial_payment_wata"
         )])
 
+    if settings.is_platega_enabled():
+        platega_name = settings.get_platega_display_name()
+        keyboard.append([types.InlineKeyboardButton(
+            text=f"💳 {platega_name}",
+            callback_data="trial_payment_platega"
+        )])
+
     # Кнопка назад
     keyboard.append([types.InlineKeyboardButton(
         text=texts.BACK,
@@ -1429,6 +1436,13 @@ async def return_to_saved_cart(
         return
 
     texts = get_texts(db_user.language)
+
+    # Проверяем режим корзины - если это тарифная корзина, перенаправляем на соответствующий обработчик
+    cart_mode = cart_data.get('cart_mode')
+    if cart_mode in ('tariff_purchase', 'daily_tariff_purchase', 'extend') and cart_data.get('tariff_id'):
+        from .tariff_purchase import return_to_saved_tariff_cart
+        await return_to_saved_tariff_cart(callback, state, db_user, db, cart_data)
+        return
 
     preserved_metadata_keys = {
         'saved_cart',
@@ -2871,19 +2885,19 @@ async def confirm_purchase(
         await db.refresh(db_user)
 
         subscription_service = SubscriptionService()
-
+        # При покупке подписки ВСЕГДА сбрасываем трафик в панели
         if db_user.remnawave_uuid:
             remnawave_user = await subscription_service.update_remnawave_user(
                 db,
                 subscription,
-                reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                reset_traffic=True,
                 reset_reason="покупка подписки",
             )
         else:
             remnawave_user = await subscription_service.create_remnawave_user(
                 db,
                 subscription,
-                reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                reset_traffic=True,
                 reset_reason="покупка подписки",
             )
 
@@ -2892,7 +2906,7 @@ async def confirm_purchase(
             remnawave_user = await subscription_service.create_remnawave_user(
                 db,
                 subscription,
-                reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                reset_traffic=True,
                 reset_reason="покупка подписки (повторная попытка)",
             )
 
@@ -3758,6 +3772,7 @@ async def handle_trial_payment_method(
         elif payment_method == "yookassa_sbp":
             # Оплата через YooKassa СБП
             payment_result = await payment_service.create_yookassa_sbp_payment(
+                db=db,
                 amount_kopeks=trial_price_kopeks,
                 description=texts.t("PAID_TRIAL_PAYMENT_DESC", "Пробная подписка на {days} дней").format(
                     days=settings.TRIAL_DURATION_DAYS
@@ -4003,6 +4018,50 @@ async def handle_trial_payment_method(
                     [InlineKeyboardButton(
                         text=texts.t("CHECK_PAYMENT", "🔄 Проверить оплату"),
                         callback_data=f"check_trial_wata_{pending_subscription.id}"
+                    )],
+                    [InlineKeyboardButton(text=texts.BACK, callback_data="trial_activate")],
+                ]),
+                parse_mode="HTML",
+            )
+
+        elif payment_method == "platega":
+            # Оплата через Platega
+            active_methods = settings.get_platega_active_methods()
+            if not active_methods:
+                await callback.answer("❌ Platega не настроена", show_alert=True)
+                return
+
+            # Используем первый активный метод
+            method_code = active_methods[0]
+
+            payment_result = await payment_service.create_platega_payment(
+                db=db,
+                user_id=db_user.id,
+                amount_kopeks=trial_price_kopeks,
+                description=texts.t("PAID_TRIAL_PAYMENT_DESC", "Пробная подписка на {days} дней").format(
+                    days=settings.TRIAL_DURATION_DAYS
+                ),
+                language=db_user.language,
+                payment_method_code=method_code,
+            )
+
+            if not payment_result or not payment_result.get("redirect_url"):
+                await callback.answer("❌ Не удалось создать платеж. Попробуйте позже.", show_alert=True)
+                return
+
+            platega_name = settings.get_platega_display_name()
+            await callback.message.edit_text(
+                texts.t(
+                    "PAID_TRIAL_PLATEGA",
+                    "💳 <b>Оплата через {provider}</b>\n\n"
+                    "Нажмите кнопку ниже для перехода к оплате.\n\n"
+                    "💰 Сумма: {amount}"
+                ).format(provider=platega_name, amount=settings.format_price(trial_price_kopeks)),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Оплатить", url=payment_result["redirect_url"])],
+                    [InlineKeyboardButton(
+                        text=texts.t("CHECK_PAYMENT", "🔄 Проверить оплату"),
+                        callback_data=f"check_trial_platega_{pending_subscription.id}"
                     )],
                     [InlineKeyboardButton(text=texts.BACK, callback_data="trial_activate")],
                 ]),

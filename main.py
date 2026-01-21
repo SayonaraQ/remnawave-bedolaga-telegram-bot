@@ -148,6 +148,10 @@ async def main():
     logging.getLogger("aiogram").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.ERROR)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+    # Скрываем спам от WebSocket подключений (connection open/closed)
+    logging.getLogger("uvicorn.protocols.websockets.websockets_impl").setLevel(logging.WARNING)
+    logging.getLogger("websockets.server").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
 
     logger = logging.getLogger(__name__)
     timeline = StartupTimeline(logger, "Bedolaga Remnawave Bot")
@@ -578,7 +582,7 @@ async def main():
                     await bot.set_webhook(
                         url=webhook_url,
                         secret_token=settings.WEBHOOK_SECRET_TOKEN,
-                        drop_pending_updates=settings.WEBHOOK_DROP_PENDING_UPDATES,
+                        drop_pending_updates=False,  # Обрабатываем накопившиеся обновления
                         allowed_updates=allowed_updates,
                     )
                     stage.log(f"Webhook установлен: {webhook_url}")
@@ -664,8 +668,8 @@ async def main():
             success_message="Aiogram polling запущен",
         ) as stage:
             if polling_enabled:
-                polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
-                stage.log("skip_updates=True")
+                polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=False))
+                stage.log("skip_updates=False — накопившиеся обновления будут обработаны")
             else:
                 polling_task = None
                 stage.skip("Polling отключен режимом работы")

@@ -108,6 +108,7 @@ class PaymentMethod(Enum):
     PLATEGA = "platega"
     CLOUDPAYMENTS = "cloudpayments"
     FREEKASSA = "freekassa"
+    KASSA_AI = "kassa_ai"
     MANUAL = "manual"
     BALANCE = "balance"
 
@@ -641,6 +642,74 @@ class FreekassaPayment(Base):
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (
             "<FreekassaPayment(id={0}, order_id={1}, amount={2}₽, status={3})>".format(
+                self.id,
+                self.order_id,
+                self.amount_rubles,
+                self.status,
+            )
+        )
+
+
+class KassaAiPayment(Base):
+    """Платежи через KassaAI (api.fk.life)."""
+    __tablename__ = "kassa_ai_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Идентификаторы
+    order_id = Column(String(64), unique=True, nullable=False, index=True)  # Наш ID заказа
+    kassa_ai_order_id = Column(String(64), unique=True, nullable=True, index=True)  # orderId от KassaAI
+
+    # Суммы
+    amount_kopeks = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=False, default="RUB")
+    description = Column(Text, nullable=True)
+
+    # Статусы
+    status = Column(String(32), nullable=False, default="pending")  # pending, success, failed, expired
+    is_paid = Column(Boolean, default=False)
+
+    # Данные платежа
+    payment_url = Column(Text, nullable=True)
+    payment_system_id = Column(Integer, nullable=True)  # ID платежной системы (44=СБП, 36=Карты, 43=SberPay)
+
+    # Метаданные
+    metadata_json = Column(JSON, nullable=True)
+    callback_payload = Column(JSON, nullable=True)
+
+    # Временные метки
+    paid_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Связь с транзакцией
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
+
+    # Relationships
+    user = relationship("User", backref="kassa_ai_payments")
+    transaction = relationship("Transaction", backref="kassa_ai_payment")
+
+    @property
+    def amount_rubles(self) -> float:
+        return self.amount_kopeks / 100
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == "pending"
+
+    @property
+    def is_success(self) -> bool:
+        return self.status == "success" and self.is_paid
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status in ["failed", "expired"]
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return (
+            "<KassaAiPayment(id={0}, order_id={1}, amount={2}₽, status={3})>".format(
                 self.id,
                 self.order_id,
                 self.amount_rubles,
@@ -2563,3 +2632,37 @@ class WheelSpin(Base):
 
     def __repr__(self) -> str:
         return f"<WheelSpin id={self.id} user_id={self.user_id} prize='{self.prize_display_name}'>"
+
+
+class TicketNotification(Base):
+    """Уведомления о тикетах для кабинета (веб-интерфейс)."""
+    __tablename__ = "ticket_notifications"
+    __table_args__ = (
+        Index("ix_ticket_notifications_user_read", "user_id", "is_read"),
+        Index("ix_ticket_notifications_admin_read", "is_for_admin", "is_read"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Тип уведомления: new_ticket, admin_reply, user_reply
+    notification_type = Column(String(50), nullable=False)
+
+    # Текст уведомления
+    message = Column(Text, nullable=True)
+
+    # Для админа или для пользователя
+    is_for_admin = Column(Boolean, default=False, nullable=False)
+
+    # Прочитано ли уведомление
+    is_read = Column(Boolean, default=False, nullable=False)
+
+    created_at = Column(DateTime, default=func.now())
+    read_at = Column(DateTime, nullable=True)
+
+    ticket = relationship("Ticket", backref="notifications")
+    user = relationship("User", backref="ticket_notifications")
+
+    def __repr__(self) -> str:
+        return f"<TicketNotification id={self.id} type={self.notification_type} for_admin={self.is_for_admin}>"

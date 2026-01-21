@@ -620,7 +620,7 @@ class MiniAppSubscriptionPurchaseService:
             maximum = max(default_devices, settings.DEFAULT_DEVICE_LIMIT) + 10
 
         return PurchaseDevicesConfig(
-            minimum=1,
+            minimum=settings.DEFAULT_DEVICE_LIMIT,
             maximum=maximum,
             default=default_devices,
             current=default_devices,
@@ -653,13 +653,13 @@ class MiniAppSubscriptionPurchaseService:
 
         period = context.period_map[period_id]
 
-        traffic_value = (
-            selection_payload.get("traffic_value")
-            or selection_payload.get("trafficValue")
-            or selection_payload.get("traffic")
-            or selection_payload.get("traffic_gb")
-            or selection_payload.get("trafficGb")
-        )
+        # Don't use `or` chaining - 0 is valid for unlimited traffic
+        traffic_value = None
+        for key in ("traffic_value", "trafficValue", "traffic", "traffic_gb", "trafficGb"):
+            value = selection_payload.get(key)
+            if value is not None:
+                traffic_value = value
+                break
 
         if period.traffic.selectable:
             available_values = {option.value for option in period.traffic.options}
@@ -1156,19 +1156,20 @@ class MiniAppSubscriptionPurchaseService:
                 logger.error("Failed to register subscription servers: %s", error)
 
         subscription_service = SubscriptionService()
+        # При покупке подписки ВСЕГДА сбрасываем трафик в панели
         try:
             if getattr(user, "remnawave_uuid", None):
                 await subscription_service.update_remnawave_user(
                     db,
                     subscription,
-                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                    reset_traffic=True,
                     reset_reason="miniapp purchase",
                 )
             else:
                 await subscription_service.create_remnawave_user(
                     db,
                     subscription,
-                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                    reset_traffic=True,
                     reset_reason="miniapp purchase",
                 )
         except Exception as remnawave_error:  # pragma: no cover - defensive logging

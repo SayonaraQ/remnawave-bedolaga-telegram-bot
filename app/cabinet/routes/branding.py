@@ -30,6 +30,8 @@ BRANDING_NAME_KEY = "CABINET_BRANDING_NAME"
 BRANDING_LOGO_KEY = "CABINET_BRANDING_LOGO"  # Stores "custom" or "default"
 THEME_COLORS_KEY = "CABINET_THEME_COLORS"  # Stores JSON with theme colors
 ENABLED_THEMES_KEY = "CABINET_ENABLED_THEMES"  # Stores JSON with enabled themes {"dark": true, "light": false}
+ANIMATION_ENABLED_KEY = "CABINET_ANIMATION_ENABLED"  # Stores "true" or "false"
+FULLSCREEN_ENABLED_KEY = "CABINET_FULLSCREEN_ENABLED"  # Stores "true" or "false"
 
 # Allowed image types
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/svg+xml"}
@@ -93,6 +95,26 @@ class EnabledThemesUpdate(BaseModel):
     """Request to update enabled themes."""
     dark: Optional[bool] = None
     light: Optional[bool] = None
+
+
+class AnimationEnabledResponse(BaseModel):
+    """Animation enabled setting."""
+    enabled: bool = True
+
+
+class AnimationEnabledUpdate(BaseModel):
+    """Request to update animation setting."""
+    enabled: bool
+
+
+class FullscreenEnabledResponse(BaseModel):
+    """Fullscreen enabled setting."""
+    enabled: bool = False
+
+
+class FullscreenEnabledUpdate(BaseModel):
+    """Request to update fullscreen setting."""
+    enabled: bool
 
 
 # Default theme colors
@@ -504,3 +526,71 @@ async def update_enabled_themes(
     logger.info(f"Admin {admin.telegram_id} updated enabled themes: {current_themes}")
 
     return EnabledThemesResponse(**current_themes)
+
+
+# ============ Animation Routes ============
+
+@router.get("/animation", response_model=AnimationEnabledResponse)
+async def get_animation_enabled(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """
+    Get animation enabled setting.
+    This is a public endpoint - no authentication required.
+    """
+    animation_value = await get_setting_value(db, ANIMATION_ENABLED_KEY)
+
+    if animation_value is not None:
+        enabled = animation_value.lower() == "true"
+        return AnimationEnabledResponse(enabled=enabled)
+
+    # Default: enabled
+    return AnimationEnabledResponse(enabled=True)
+
+
+@router.patch("/animation", response_model=AnimationEnabledResponse)
+async def update_animation_enabled(
+    payload: AnimationEnabledUpdate,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update animation enabled setting. Admin only."""
+    await set_setting_value(db, ANIMATION_ENABLED_KEY, str(payload.enabled).lower())
+
+    logger.info(f"Admin {admin.telegram_id} set animation enabled: {payload.enabled}")
+
+    return AnimationEnabledResponse(enabled=payload.enabled)
+
+
+# ============ Fullscreen Routes ============
+
+@router.get("/fullscreen", response_model=FullscreenEnabledResponse)
+async def get_fullscreen_enabled(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """
+    Get fullscreen enabled setting.
+    This is a public endpoint - no authentication required.
+    """
+    fullscreen_value = await get_setting_value(db, FULLSCREEN_ENABLED_KEY)
+
+    if fullscreen_value is not None:
+        enabled = fullscreen_value.lower() == "true"
+        return FullscreenEnabledResponse(enabled=enabled)
+
+    # Default: disabled
+    return FullscreenEnabledResponse(enabled=False)
+
+
+@router.patch("/fullscreen", response_model=FullscreenEnabledResponse)
+async def update_fullscreen_enabled(
+    payload: FullscreenEnabledUpdate,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update fullscreen enabled setting. Admin only."""
+    await set_setting_value(db, FULLSCREEN_ENABLED_KEY, str(payload.enabled).lower())
+
+    logger.info(f"Admin {admin.telegram_id} set fullscreen enabled: {payload.enabled}")
+
+    return FullscreenEnabledResponse(enabled=payload.enabled)
