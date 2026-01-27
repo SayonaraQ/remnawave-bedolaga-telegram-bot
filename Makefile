@@ -25,15 +25,25 @@ reload-follow: ## Перезапустить контейнеры с логам�
 
 .PHONY: test
 test: ## Запустить тесты
-	@echo "🧪 Запускаем тесты..."
-	pytest -v
+	uv run pytest -v
+
+.PHONY: lint
+lint: ## Проверить код (ruff check)
+	uv run ruff check .
+
+.PHONY: format
+format: ## Форматировать код (ruff format)
+	uv run ruff format .
+
+.PHONY: fix
+fix: ## Исправить код (ruff check --fix + format)
+	uv run ruff check . --fix
+	uv run ruff format .
 
 .PHONY: help
 help: ## Показать список доступных команд
 	@echo ""
 	@echo "📘 Команды Makefile:"
 	@echo ""
-	@grep -E '^[a-zA-Z0-9_-]+:.*?##' $(MAKEFILE_LIST) | \
-		sed -E 's/:.*?## /| /' | \
-		awk -F'|' '{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@awk -F':.*## ' '/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""

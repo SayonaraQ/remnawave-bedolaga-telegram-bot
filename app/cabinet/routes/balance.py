@@ -3,49 +3,49 @@
 import logging
 import math
 import time
-from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
 
-from app.database.models import User, Transaction, PaymentMethod
 from app.config import settings
-from app.services.yookassa_service import YooKassaService
-from app.external.cryptobot import CryptoBotService
 from app.database.crud.user import get_user_by_id
+from app.database.models import PaymentMethod, Transaction, User
+from app.external.cryptobot import CryptoBotService
 from app.services.payment_service import PaymentService
+from app.services.payment_verification_service import (
+    SUPPORTED_MANUAL_CHECK_METHODS,
+    PendingPayment,
+    get_payment_record,
+    list_recent_pending_payments,
+    method_display_name,
+    run_manual_check,
+)
+from app.services.yookassa_service import YooKassaService
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 from ..schemas.balance import (
     BalanceResponse,
-    TransactionResponse,
-    TransactionListResponse,
+    ManualCheckResponse,
     PaymentMethodResponse,
-    TopUpRequest,
-    TopUpResponse,
+    PendingPaymentListResponse,
+    PendingPaymentResponse,
     StarsInvoiceRequest,
     StarsInvoiceResponse,
-    PendingPaymentResponse,
-    PendingPaymentListResponse,
-    ManualCheckResponse,
+    TopUpRequest,
+    TopUpResponse,
+    TransactionListResponse,
+    TransactionResponse,
 )
-from app.services.payment_verification_service import (
-    list_recent_pending_payments,
-    get_payment_record,
-    run_manual_check,
-    SUPPORTED_MANUAL_CHECK_METHODS,
-    method_display_name,
-    PendingPayment,
-)
+
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/balance", tags=["Cabinet Balance"])
+router = APIRouter(prefix='/balance', tags=['Cabinet Balance'])
 
 
-@router.get("", response_model=BalanceResponse)
+@router.get('', response_model=BalanceResponse)
 async def get_balance(
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
@@ -55,7 +55,7 @@ async def get_balance(
     # (user object is from different session in get_current_cabinet_user)
     fresh_user = await get_user_by_id(db, user.id)
     if not fresh_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail='User not found')
 
     return BalanceResponse(
         balance_kopeks=fresh_user.balance_kopeks,
@@ -63,11 +63,11 @@ async def get_balance(
     )
 
 
-@router.get("/transactions", response_model=TransactionListResponse)
+@router.get('/transactions', response_model=TransactionListResponse)
 async def get_transactions(
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    type: Optional[str] = Query(None, description="Filter by transaction type"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(20, ge=1, le=100, description='Items per page'),
+    type: str | None = Query(None, description='Filter by transaction type'),
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
@@ -102,17 +102,19 @@ async def get_transactions(
         is_debit = t.type in ['subscription_payment', 'withdrawal']
         amount_kopeks = -abs(t.amount_kopeks) if is_debit else abs(t.amount_kopeks)
 
-        items.append(TransactionResponse(
-            id=t.id,
-            type=t.type,
-            amount_kopeks=amount_kopeks,
-            amount_rubles=amount_kopeks / 100,
-            description=t.description,
-            payment_method=t.payment_method,
-            is_completed=t.is_completed,
-            created_at=t.created_at,
-            completed_at=t.completed_at,
-        ))
+        items.append(
+            TransactionResponse(
+                id=t.id,
+                type=t.type,
+                amount_kopeks=amount_kopeks,
+                amount_rubles=amount_kopeks / 100,
+                description=t.description,
+                payment_method=t.payment_method,
+                is_completed=t.is_completed,
+                created_at=t.created_at,
+                completed_at=t.completed_at,
+            )
+        )
 
     pages = math.ceil(total / per_page) if total > 0 else 1
 
@@ -125,145 +127,152 @@ async def get_transactions(
     )
 
 
-@router.get("/payment-methods", response_model=List[PaymentMethodResponse])
-async def get_payment_methods():
-    """Get available payment methods."""
+async def _get_available_payment_methods(
+    db: AsyncSession,
+    user: User,
+) -> list[PaymentMethodResponse]:
+    """Get available payment methods filtered by DB config and user context.
+
+    Combines env-var availability with DB-based admin config (ordering, display conditions).
+    """
+    from app.services.payment_method_config_service import (
+        _get_method_defaults,
+        get_all_configs,
+    )
+
+    configs = await get_all_configs(db)
+    defaults = _get_method_defaults()
+
+    # Provider availability checks from env vars
+    provider_enabled = {
+        'telegram_stars': settings.TELEGRAM_STARS_ENABLED,
+        'tribute': settings.TRIBUTE_ENABLED and bool(getattr(settings, 'TRIBUTE_DONATE_LINK', '')),
+        'cryptobot': settings.is_cryptobot_enabled(),
+        'heleket': settings.is_heleket_enabled(),
+        'yookassa': settings.is_yookassa_enabled(),
+        'mulenpay': settings.is_mulenpay_enabled(),
+        'pal24': settings.is_pal24_enabled(),
+        'platega': settings.is_platega_enabled(),
+        'wata': settings.is_wata_enabled(),
+        'freekassa': settings.is_freekassa_enabled(),
+        'cloudpayments': settings.is_cloudpayments_enabled(),
+    }
+
+    # Default options builder (for methods with sub-options)
+    def _build_options(method_id: str, config_sub_options: dict | None) -> list[dict] | None:
+        if method_id == 'yookassa':
+            all_opts = [
+                {'id': 'card', 'name': '💳 Карта', 'description': 'Банковская карта'},
+                {'id': 'sbp', 'name': '🏦 СБП', 'description': 'Система быстрых платежей (QR)'},
+            ]
+        elif method_id == 'pal24':
+            all_opts = [
+                {'id': 'sbp', 'name': '🏦 СБП', 'description': 'Система быстрых платежей'},
+                {'id': 'card', 'name': '💳 Карта', 'description': 'Банковская карта'},
+            ]
+        elif method_id == 'platega':
+            platega_methods = settings.get_platega_active_methods()
+            definitions = settings.get_platega_method_definitions()
+            all_opts = []
+            for method_code in platega_methods:
+                info = definitions.get(method_code, {})
+                all_opts.append(
+                    {
+                        'id': str(method_code),
+                        'name': info.get('title') or info.get('name') or f'Platega {method_code}',
+                        'description': info.get('description') or info.get('name') or '',
+                    }
+                )
+        elif method_id == 'freekassa':
+            all_opts = [
+                {'id': 'sbp', 'name': '🏦 NSPK СБП', 'description': 'Система быстрых платежей'},
+                {'id': 'card', 'name': '💳 Карта', 'description': 'Банковская карта'},
+            ]
+        elif method_id == 'cloudpayments':
+            all_opts = [
+                {'id': 'card', 'name': '💳 Карта', 'description': 'Банковская карта'},
+                {'id': 'sbp', 'name': '🏦 СБП', 'description': 'Система быстрых платежей'},
+            ]
+        else:
+            return None
+
+        if not all_opts:
+            return None
+
+        # Filter by sub_options config from DB
+        if config_sub_options:
+            all_opts = [o for o in all_opts if config_sub_options.get(o['id'], True)]
+
+        return all_opts if all_opts else None
+
+    # User promo group IDs for filtering
+    user_promo_group_ids: set[int] = set()
+    if hasattr(user, 'user_promo_groups') and user.user_promo_groups:
+        for upg in user.user_promo_groups:
+            user_promo_group_ids.add(upg.promo_group_id)
+    if hasattr(user, 'promo_group_id') and user.promo_group_id:
+        user_promo_group_ids.add(user.promo_group_id)
+
     methods = []
+    for config in configs:
+        mid = config.method_id
 
-    # YooKassa - with card and SBP options
-    if settings.is_yookassa_enabled():
-        methods.append(PaymentMethodResponse(
-            id="yookassa",
-            name=settings.get_yookassa_display_name(),
-            description="Pay via YooKassa",
-            min_amount_kopeks=settings.YOOKASSA_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.YOOKASSA_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-            options=[
-                {"id": "card", "name": "💳 Карта", "description": "Банковская карта"},
-                {"id": "sbp", "name": "🏦 СБП", "description": "Система быстрых платежей (QR)"},
-            ],
-        ))
+        # 1. Check env-var provider availability AND DB admin toggle
+        if not provider_enabled.get(mid, False):
+            continue
+        if not config.is_enabled:
+            continue
 
-    # CryptoBot
-    if settings.is_cryptobot_enabled():
-        methods.append(PaymentMethodResponse(
-            id="cryptobot",
-            name=settings.get_cryptobot_display_name(),
-            description="Pay with cryptocurrency via CryptoBot",
-            min_amount_kopeks=1000,
-            max_amount_kopeks=10000000,
-            is_available=True,
-        ))
+        # 2. Check user type filter
+        if config.user_type_filter == 'telegram' and user.auth_type != 'telegram':
+            continue
+        if config.user_type_filter == 'email' and user.auth_type != 'email':
+            continue
 
-    # Telegram Stars
-    if settings.TELEGRAM_STARS_ENABLED:
-        methods.append(PaymentMethodResponse(
-            id="telegram_stars",
-            name=settings.get_telegram_stars_display_name(),
-            description="Pay with Telegram Stars",
-            min_amount_kopeks=100,
-            max_amount_kopeks=1000000,
-            is_available=True,
-        ))
+        # 3. Check first topup filter
+        if config.first_topup_filter == 'yes' and not user.has_made_first_topup:
+            continue
+        if config.first_topup_filter == 'no' and user.has_made_first_topup:
+            continue
 
-    # Heleket
-    if settings.is_heleket_enabled():
-        methods.append(PaymentMethodResponse(
-            id="heleket",
-            name=settings.get_heleket_display_name(),
-            description="Pay with cryptocurrency via Heleket",
-            min_amount_kopeks=1000,
-            max_amount_kopeks=10000000,
-            is_available=True,
-        ))
+        # 4. Check promo group filter
+        if config.promo_group_filter_mode == 'selected' and config.allowed_promo_groups:
+            allowed_ids = {pg.id for pg in config.allowed_promo_groups}
+            if not user_promo_group_ids.intersection(allowed_ids):
+                continue
 
-    # MulenPay
-    if settings.is_mulenpay_enabled():
-        methods.append(PaymentMethodResponse(
-            id="mulenpay",
-            name=settings.get_mulenpay_display_name(),
-            description="MulenPay payment",
-            min_amount_kopeks=settings.MULENPAY_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.MULENPAY_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-        ))
+        # Build the response
+        method_def = defaults.get(mid, {})
+        display_name = config.display_name or method_def.get('default_display_name', mid)
+        min_amount = config.min_amount_kopeks or method_def.get('default_min', 1000)
+        max_amount = config.max_amount_kopeks or method_def.get('default_max', 10000000)
+        options = _build_options(mid, config.sub_options)
 
-    # PAL24 - add options for card/sbp
-    if settings.is_pal24_enabled():
-        methods.append(PaymentMethodResponse(
-            id="pal24",
-            name=settings.get_pal24_display_name(),
-            description="Pay via PAL24",
-            min_amount_kopeks=settings.PAL24_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.PAL24_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-            options=[
-                {"id": "sbp", "name": "🏦 СБП", "description": "Система быстрых платежей"},
-                {"id": "card", "name": "💳 Карта", "description": "Банковская карта"},
-            ],
-        ))
-
-    # Platega - add options for different payment methods
-    if settings.is_platega_enabled():
-        platega_methods = settings.get_platega_active_methods()
-        definitions = settings.get_platega_method_definitions()
-        platega_options = []
-        for method_code in platega_methods:
-            info = definitions.get(method_code, {})
-            platega_options.append({
-                "id": str(method_code),
-                "name": info.get("title") or info.get("name") or f"Platega {method_code}",
-                "description": info.get("description") or info.get("name") or "",
-            })
-
-        methods.append(PaymentMethodResponse(
-            id="platega",
-            name=settings.get_platega_display_name(),
-            description="Pay via Platega",
-            min_amount_kopeks=settings.PLATEGA_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.PLATEGA_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-            options=platega_options if platega_options else None,
-        ))
-
-    # Wata
-    if settings.is_wata_enabled():
-        methods.append(PaymentMethodResponse(
-            id="wata",
-            name=settings.get_wata_display_name(),
-            description="Pay via Wata",
-            min_amount_kopeks=settings.WATA_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.WATA_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-        ))
-
-    # CloudPayments
-    if settings.is_cloudpayments_enabled():
-        methods.append(PaymentMethodResponse(
-            id="cloudpayments",
-            name=settings.get_cloudpayments_display_name(),
-            description="Pay with bank card via CloudPayments",
-            min_amount_kopeks=settings.CLOUDPAYMENTS_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.CLOUDPAYMENTS_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-        ))
-
-    # FreeKassa
-    if settings.is_freekassa_enabled():
-        methods.append(PaymentMethodResponse(
-            id="freekassa",
-            name=settings.get_freekassa_display_name(),
-            description="Pay via FreeKassa",
-            min_amount_kopeks=settings.FREEKASSA_MIN_AMOUNT_KOPEKS,
-            max_amount_kopeks=settings.FREEKASSA_MAX_AMOUNT_KOPEKS,
-            is_available=True,
-        ))
+        methods.append(
+            PaymentMethodResponse(
+                id=mid,
+                name=display_name,
+                description=None,
+                min_amount_kopeks=min_amount,
+                max_amount_kopeks=max_amount,
+                is_available=True,
+                options=options,
+            )
+        )
 
     return methods
 
 
-@router.post("/stars-invoice", response_model=StarsInvoiceResponse)
+@router.get('/payment-methods', response_model=list[PaymentMethodResponse])
+async def get_payment_methods(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get available payment methods."""
+    return await _get_available_payment_methods(db, user)
+
+
+@router.post('/stars-invoice', response_model=StarsInvoiceResponse)
 async def create_stars_invoice(
     request: StarsInvoiceRequest,
     user: User = Depends(get_current_cabinet_user),
@@ -276,20 +285,20 @@ async def create_stars_invoice(
     if not settings.TELEGRAM_STARS_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Telegram Stars payments are not enabled",
+            detail='Telegram Stars payments are not enabled',
         )
 
     # Validate amount
     if request.amount_kopeks < 100:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Minimum amount is 1.00 RUB",
+            detail='Minimum amount is 1.00 RUB',
         )
 
     if request.amount_kopeks > 1000000:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Maximum amount is 10,000.00 RUB",
+            detail='Maximum amount is 10,000.00 RUB',
         )
 
     # Calculate Stars amount
@@ -300,46 +309,46 @@ async def create_stars_invoice(
         if stars_amount <= 0:
             stars_amount = 1
     except Exception as e:
-        logger.error(f"Error calculating Stars amount: {e}")
+        logger.error(f'Error calculating Stars amount: {e}')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to calculate Stars amount",
+            detail='Failed to calculate Stars amount',
         )
 
     # Create payload for tracking payment
-    payload = f"balance_topup_{user.id}_{request.amount_kopeks}_{int(time.time())}"
+    payload = f'balance_topup_{user.id}_{request.amount_kopeks}_{int(time.time())}'
 
     # Create invoice through Telegram Bot API
     try:
         bot_token = settings.BOT_TOKEN
-        api_url = f"https://api.telegram.org/bot{bot_token}/createInvoiceLink"
+        api_url = f'https://api.telegram.org/bot{bot_token}/createInvoiceLink'
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 api_url,
                 json={
-                    "title": "Пополнение баланса VPN",
-                    "description": f"Пополнение баланса на {amount_rubles:.2f} ₽ ({stars_amount} ⭐)",
-                    "payload": payload,
-                    "provider_token": "",  # Empty for Stars
-                    "currency": "XTR",
-                    "prices": [{"label": "Пополнение баланса", "amount": stars_amount}],
+                    'title': 'Пополнение баланса VPN',
+                    'description': f'Пополнение баланса на {amount_rubles:.2f} ₽ ({stars_amount} ⭐)',
+                    'payload': payload,
+                    'provider_token': '',  # Empty for Stars
+                    'currency': 'XTR',
+                    'prices': [{'label': 'Пополнение баланса', 'amount': stars_amount}],
                 },
             )
 
             result = response.json()
 
-            if not result.get("ok"):
-                logger.error(f"Telegram API error: {result}")
+            if not result.get('ok'):
+                logger.error(f'Telegram API error: {result}')
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create Stars invoice",
+                    detail='Failed to create Stars invoice',
                 )
 
-            invoice_url = result["result"]
+            invoice_url = result['result']
             logger.info(
-                f"Created Stars invoice for balance top-up: user={user.id}, "
-                f"amount={request.amount_kopeks} kopeks, stars={stars_amount}"
+                f'Created Stars invoice for balance top-up: user={user.id}, '
+                f'amount={request.amount_kopeks} kopeks, stars={stars_amount}'
             )
 
             return StarsInvoiceResponse(
@@ -349,14 +358,14 @@ async def create_stars_invoice(
             )
 
     except httpx.HTTPError as e:
-        logger.error(f"HTTP error creating Stars invoice: {e}")
+        logger.error(f'HTTP error creating Stars invoice: {e}')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to connect to Telegram API",
+            detail='Failed to connect to Telegram API',
         )
 
 
-@router.post("/topup", response_model=TopUpResponse)
+@router.post('/topup', response_model=TopUpResponse)
 async def create_topup(
     request: TopUpRequest,
     user: User = Depends(get_current_cabinet_user),
@@ -364,26 +373,26 @@ async def create_topup(
 ):
     """Create payment for balance top-up."""
     # Validate payment method
-    methods = await get_payment_methods()
+    methods = await _get_available_payment_methods(db, user)
     method = next((m for m in methods if m.id == request.payment_method), None)
 
     if not method or not method.is_available:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or unavailable payment method",
+            detail='Invalid or unavailable payment method',
         )
 
     # Validate amount
     if request.amount_kopeks < method.min_amount_kopeks:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Minimum amount is {method.min_amount_kopeks / 100:.2f} RUB",
+            detail=f'Minimum amount is {method.min_amount_kopeks / 100:.2f} RUB',
         )
 
     if request.amount_kopeks > method.max_amount_kopeks:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Maximum amount is {method.max_amount_kopeks / 100:.2f} RUB",
+            detail=f'Maximum amount is {method.max_amount_kopeks / 100:.2f} RUB',
         )
 
     amount_rubles = request.amount_kopeks / 100
@@ -391,29 +400,28 @@ async def create_topup(
     payment_id = None
 
     try:
-        if request.payment_method == "yookassa":
+        if request.payment_method == 'yookassa':
             yookassa_service = YooKassaService()
             yookassa_metadata = {
-                "user_id": str(user.id),
-                "user_telegram_id": str(user.telegram_id) if user.telegram_id else "",
-                "user_username": user.username or "",
-                "amount_kopeks": str(request.amount_kopeks),
-                "type": "balance_topup",
-                "source": "cabinet",
+                'user_id': str(user.id),
+                'user_telegram_id': str(user.telegram_id) if user.telegram_id else '',
+                'user_username': user.username or '',
+                'amount_kopeks': str(request.amount_kopeks),
+                'type': 'balance_topup',
+                'source': 'cabinet',
             }
 
             # Use payment_option to select card or sbp (default: card)
-            option = (request.payment_option or "").strip().lower()
+            option = (request.payment_option or '').strip().lower()
             # Use description with telegram_id for tax receipts
             description = settings.get_balance_payment_description(
-                request.amount_kopeks,
-                telegram_user_id=user.telegram_id
+                request.amount_kopeks, telegram_user_id=user.telegram_id
             )
-            if option == "sbp":
+            if option == 'sbp':
                 # Create SBP payment with QR code
                 result = await yookassa_service.create_sbp_payment(
                     amount=amount_rubles,
-                    currency="RUB",
+                    currency='RUB',
                     description=description,
                     metadata=yookassa_metadata,
                 )
@@ -421,65 +429,65 @@ async def create_topup(
                 # Default: card payment
                 result = await yookassa_service.create_payment(
                     amount=amount_rubles,
-                    currency="RUB",
+                    currency='RUB',
                     description=description,
                     metadata=yookassa_metadata,
                 )
 
-            if result and not result.get("error"):
-                payment_url = result.get("confirmation_url")
-                payment_id = result.get("id")
+            if result and not result.get('error'):
+                payment_url = result.get('confirmation_url')
+                payment_id = result.get('id')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create YooKassa payment",
+                    detail='Failed to create YooKassa payment',
                 )
 
-        elif request.payment_method == "cryptobot":
+        elif request.payment_method == 'cryptobot':
             cryptobot_service = CryptoBotService()
             # Convert RUB to USDT (approximate)
             usdt_amount = amount_rubles / 100  # Approximate rate
             result = await cryptobot_service.create_invoice(
                 amount=usdt_amount,
-                asset="USDT",
-                description=f"Balance top-up {amount_rubles:.2f} RUB",
-                payload=f"cabinet_topup_{user.id}_{request.amount_kopeks}",
+                asset='USDT',
+                description=f'Balance top-up {amount_rubles:.2f} RUB',
+                payload=f'cabinet_topup_{user.id}_{request.amount_kopeks}',
             )
             if result:
                 # Priority: web_app for desktop/browser, mini_app for mobile, bot as fallback
                 payment_url = (
-                    result.get("web_app_invoice_url")
-                    or result.get("mini_app_invoice_url")
-                    or result.get("bot_invoice_url")
-                    or result.get("pay_url")
+                    result.get('web_app_invoice_url')
+                    or result.get('mini_app_invoice_url')
+                    or result.get('bot_invoice_url')
+                    or result.get('pay_url')
                 )
-                payment_id = str(result.get("invoice_id"))
+                payment_id = str(result.get('invoice_id'))
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create CryptoBot invoice",
+                    detail='Failed to create CryptoBot invoice',
                 )
 
-        elif request.payment_method == "telegram_stars":
+        elif request.payment_method == 'telegram_stars':
             # Telegram Stars payments require bot interaction
-            bot_username = settings.get_bot_username() or "bot"
+            bot_username = settings.get_bot_username() or 'bot'
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Telegram Stars payments are only available through the bot. Please use @{bot_username}",
+                detail=f'Telegram Stars payments are only available through the bot. Please use @{bot_username}',
             )
 
-        elif request.payment_method == "platega":
+        elif request.payment_method == 'platega':
             if not settings.is_platega_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Platega payment method is unavailable",
+                    detail='Platega payment method is unavailable',
                 )
 
             active_methods = settings.get_platega_active_methods()
             if not active_methods:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No Platega payment methods configured",
+                    detail='No Platega payment methods configured',
                 )
 
             # Use payment_option if provided, otherwise use first active method
@@ -489,13 +497,13 @@ async def create_topup(
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid Platega payment option",
+                    detail='Invalid Platega payment option',
                 )
 
             if method_code not in active_methods:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Selected Platega method is unavailable",
+                    detail='Selected Platega method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -503,25 +511,27 @@ async def create_topup(
                 db=db,
                 user_id=user.id,
                 amount_kopeks=request.amount_kopeks,
-                description=settings.get_balance_payment_description(request.amount_kopeks, telegram_user_id=user.telegram_id),
+                description=settings.get_balance_payment_description(
+                    request.amount_kopeks, telegram_user_id=user.telegram_id
+                ),
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
                 payment_method_code=method_code,
             )
 
-            if result and result.get("redirect_url"):
-                payment_url = result.get("redirect_url")
-                payment_id = result.get("transaction_id") or str(result.get("local_payment_id", "pending"))
+            if result and result.get('redirect_url'):
+                payment_url = result.get('redirect_url')
+                payment_id = result.get('transaction_id') or str(result.get('local_payment_id', 'pending'))
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create Platega payment",
+                    detail='Failed to create Platega payment',
                 )
 
-        elif request.payment_method == "heleket":
+        elif request.payment_method == 'heleket':
             if not settings.is_heleket_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Heleket payment method is unavailable",
+                    detail='Heleket payment method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -533,20 +543,20 @@ async def create_topup(
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
             )
 
-            if result and result.get("payment_url"):
-                payment_url = result.get("payment_url")
-                payment_id = str(result.get("local_payment_id") or result.get("uuid") or "pending")
+            if result and result.get('payment_url'):
+                payment_url = result.get('payment_url')
+                payment_id = str(result.get('local_payment_id') or result.get('uuid') or 'pending')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create Heleket payment",
+                    detail='Failed to create Heleket payment',
                 )
 
-        elif request.payment_method == "mulenpay":
+        elif request.payment_method == 'mulenpay':
             if not settings.is_mulenpay_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="MulenPay payment method is unavailable",
+                    detail='MulenPay payment method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -558,27 +568,27 @@ async def create_topup(
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
             )
 
-            if result and result.get("payment_url"):
-                payment_url = result.get("payment_url")
-                payment_id = str(result.get("local_payment_id") or result.get("mulen_payment_id") or "pending")
+            if result and result.get('payment_url'):
+                payment_url = result.get('payment_url')
+                payment_id = str(result.get('local_payment_id') or result.get('mulen_payment_id') or 'pending')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create MulenPay payment",
+                    detail='Failed to create MulenPay payment',
                 )
 
-        elif request.payment_method == "pal24":
+        elif request.payment_method == 'pal24':
             if not settings.is_pal24_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="PAL24 payment method is unavailable",
+                    detail='PAL24 payment method is unavailable',
                 )
 
             # Use payment_option to select card or sbp (default: sbp)
-            option = (request.payment_option or "").strip().lower()
-            if option not in {"card", "sbp"}:
-                option = "sbp"
-            provider_method = "card" if option == "card" else "sbp"
+            option = (request.payment_option or '').strip().lower()
+            if option not in {'card', 'sbp'}:
+                option = 'sbp'
+            provider_method = 'card' if option == 'card' else 'sbp'
 
             payment_service = PaymentService()
             result = await payment_service.create_pal24_payment(
@@ -593,30 +603,32 @@ async def create_topup(
             if result:
                 # Select appropriate URL based on payment option
                 preferred_urls = []
-                if option == "sbp":
-                    preferred_urls.append(result.get("sbp_url") or result.get("transfer_url"))
-                elif option == "card":
-                    preferred_urls.append(result.get("card_url"))
-                preferred_urls.extend([
-                    result.get("link_url"),
-                    result.get("link_page_url"),
-                    result.get("payment_url"),
-                    result.get("transfer_url"),
-                ])
+                if option == 'sbp':
+                    preferred_urls.append(result.get('sbp_url') or result.get('transfer_url'))
+                elif option == 'card':
+                    preferred_urls.append(result.get('card_url'))
+                preferred_urls.extend(
+                    [
+                        result.get('link_url'),
+                        result.get('link_page_url'),
+                        result.get('payment_url'),
+                        result.get('transfer_url'),
+                    ]
+                )
                 payment_url = next((url for url in preferred_urls if url), None)
-                payment_id = str(result.get("local_payment_id") or result.get("bill_id") or "pending")
+                payment_id = str(result.get('local_payment_id') or result.get('bill_id') or 'pending')
 
             if not payment_url:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create PAL24 payment",
+                    detail='Failed to create PAL24 payment',
                 )
 
-        elif request.payment_method == "wata":
+        elif request.payment_method == 'wata':
             if not settings.is_wata_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Wata payment method is unavailable",
+                    detail='Wata payment method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -628,20 +640,20 @@ async def create_topup(
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
             )
 
-            if result and result.get("payment_url"):
-                payment_url = result.get("payment_url")
-                payment_id = str(result.get("local_payment_id") or result.get("payment_link_id") or "pending")
+            if result and result.get('payment_url'):
+                payment_url = result.get('payment_url')
+                payment_id = str(result.get('local_payment_id') or result.get('payment_link_id') or 'pending')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create Wata payment",
+                    detail='Failed to create Wata payment',
                 )
 
-        elif request.payment_method == "cloudpayments":
+        elif request.payment_method == 'cloudpayments':
             if not settings.is_cloudpayments_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="CloudPayments payment method is unavailable",
+                    detail='CloudPayments payment method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -650,23 +662,24 @@ async def create_topup(
                 user_id=user.id,
                 amount_kopeks=request.amount_kopeks,
                 description=settings.get_balance_payment_description(request.amount_kopeks),
+                telegram_id=user.telegram_id,
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
             )
 
-            if result and result.get("payment_url"):
-                payment_url = result.get("payment_url")
-                payment_id = str(result.get("local_payment_id") or result.get("invoice_id") or "pending")
+            if result and result.get('payment_url'):
+                payment_url = result.get('payment_url')
+                payment_id = str(result.get('local_payment_id') or result.get('invoice_id') or 'pending')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create CloudPayments payment",
+                    detail='Failed to create CloudPayments payment',
                 )
 
-        elif request.payment_method == "freekassa":
+        elif request.payment_method == 'freekassa':
             if not settings.is_freekassa_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="FreeKassa payment method is unavailable",
+                    detail='FreeKassa payment method is unavailable',
                 )
 
             payment_service = PaymentService()
@@ -678,145 +691,156 @@ async def create_topup(
                 language=getattr(user, 'language', None) or settings.DEFAULT_LANGUAGE,
             )
 
-            if result and result.get("payment_url"):
-                payment_url = result.get("payment_url")
-                payment_id = str(result.get("local_payment_id") or result.get("order_id") or "pending")
+            if result and result.get('payment_url'):
+                payment_url = result.get('payment_url')
+                payment_id = str(result.get('local_payment_id') or result.get('order_id') or 'pending')
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create FreeKassa payment",
+                    detail='Failed to create FreeKassa payment',
                 )
+
+        elif request.payment_method == 'tribute':
+            if not settings.TRIBUTE_ENABLED or not settings.TRIBUTE_DONATE_LINK:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Tribute payment method is unavailable',
+                )
+
+            user_identifier = user.telegram_id or user.id
+            payment_url = f'{settings.TRIBUTE_DONATE_LINK}&user_id={user_identifier}'
+            payment_id = f'tribute_{user_identifier}_{request.amount_kopeks}'
 
         else:
             # For other payment methods, redirect to bot
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This payment method is only available through the Telegram bot.",
+                detail='This payment method is only available through the Telegram bot.',
             )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Payment creation error: {e}")
+        logger.error(f'Payment creation error: {e}')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create payment. Please try again later.",
+            detail='Failed to create payment. Please try again later.',
         )
 
     if not payment_url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Payment URL not received",
+            detail='Payment URL not received',
         )
 
     return TopUpResponse(
-        payment_id=payment_id or "pending",
+        payment_id=payment_id or 'pending',
         payment_url=payment_url,
         amount_kopeks=request.amount_kopeks,
         amount_rubles=amount_rubles,
-        status="pending",
+        status='pending',
         expires_at=None,
     )
 
 
 def _get_status_info(record: PendingPayment) -> tuple[str, str]:
     """Get status emoji and text for a pending payment."""
-    status = (record.status or "").lower()
+    status = (record.status or '').lower()
 
     if record.is_paid:
-        return "✅", "Оплачено"
+        return '✅', 'Оплачено'
 
     if record.method == PaymentMethod.PAL24:
         mapping = {
-            "new": ("⏳", "Ожидает оплаты"),
-            "process": ("⌛", "Обрабатывается"),
-            "success": ("✅", "Оплачено"),
-            "fail": ("❌", "Ошибка"),
-            "canceled": ("❌", "Отменено"),
+            'new': ('⏳', 'Ожидает оплаты'),
+            'process': ('⌛', 'Обрабатывается'),
+            'success': ('✅', 'Оплачено'),
+            'fail': ('❌', 'Ошибка'),
+            'canceled': ('❌', 'Отменено'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.MULENPAY:
         mapping = {
-            "created": ("⏳", "Ожидает оплаты"),
-            "processing": ("⌛", "Обрабатывается"),
-            "hold": ("🔒", "На удержании"),
-            "success": ("✅", "Оплачено"),
-            "canceled": ("❌", "Отменено"),
-            "error": ("❌", "Ошибка"),
+            'created': ('⏳', 'Ожидает оплаты'),
+            'processing': ('⌛', 'Обрабатывается'),
+            'hold': ('🔒', 'На удержании'),
+            'success': ('✅', 'Оплачено'),
+            'canceled': ('❌', 'Отменено'),
+            'error': ('❌', 'Ошибка'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.WATA:
         mapping = {
-            "opened": ("⏳", "Ожидает оплаты"),
-            "pending": ("⏳", "Ожидает оплаты"),
-            "processing": ("⌛", "Обрабатывается"),
-            "paid": ("✅", "Оплачено"),
-            "closed": ("✅", "Оплачено"),
-            "declined": ("❌", "Отклонено"),
-            "canceled": ("❌", "Отменено"),
-            "expired": ("⌛", "Истёк"),
+            'opened': ('⏳', 'Ожидает оплаты'),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'processing': ('⌛', 'Обрабатывается'),
+            'paid': ('✅', 'Оплачено'),
+            'closed': ('✅', 'Оплачено'),
+            'declined': ('❌', 'Отклонено'),
+            'canceled': ('❌', 'Отменено'),
+            'expired': ('⌛', 'Истёк'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.PLATEGA:
         mapping = {
-            "pending": ("⏳", "Ожидает оплаты"),
-            "inprogress": ("⌛", "Обрабатывается"),
-            "confirmed": ("✅", "Оплачено"),
-            "failed": ("❌", "Ошибка"),
-            "canceled": ("❌", "Отменено"),
-            "expired": ("⌛", "Истёк"),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'inprogress': ('⌛', 'Обрабатывается'),
+            'confirmed': ('✅', 'Оплачено'),
+            'failed': ('❌', 'Ошибка'),
+            'canceled': ('❌', 'Отменено'),
+            'expired': ('⌛', 'Истёк'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.HELEKET:
-        if status in {"pending", "created", "waiting", "check", "processing"}:
-            return "⏳", "Ожидает оплаты"
-        if status in {"paid", "paid_over"}:
-            return "✅", "Оплачено"
-        if status in {"cancel", "canceled", "fail", "failed", "expired"}:
-            return "❌", "Отменено"
-        return "❓", "Неизвестно"
+        if status in {'pending', 'created', 'waiting', 'check', 'processing'}:
+            return '⏳', 'Ожидает оплаты'
+        if status in {'paid', 'paid_over'}:
+            return '✅', 'Оплачено'
+        if status in {'cancel', 'canceled', 'fail', 'failed', 'expired'}:
+            return '❌', 'Отменено'
+        return '❓', 'Неизвестно'
 
     if record.method == PaymentMethod.YOOKASSA:
         mapping = {
-            "pending": ("⏳", "Ожидает оплаты"),
-            "waiting_for_capture": ("⌛", "Обрабатывается"),
-            "succeeded": ("✅", "Оплачено"),
-            "canceled": ("❌", "Отменено"),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'waiting_for_capture': ('⌛', 'Обрабатывается'),
+            'succeeded': ('✅', 'Оплачено'),
+            'canceled': ('❌', 'Отменено'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.CRYPTOBOT:
         mapping = {
-            "active": ("⏳", "Ожидает оплаты"),
-            "paid": ("✅", "Оплачено"),
-            "expired": ("⌛", "Истёк"),
+            'active': ('⏳', 'Ожидает оплаты'),
+            'paid': ('✅', 'Оплачено'),
+            'expired': ('⌛', 'Истёк'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.CLOUDPAYMENTS:
         mapping = {
-            "pending": ("⏳", "Ожидает оплаты"),
-            "authorized": ("⌛", "Авторизовано"),
-            "completed": ("✅", "Оплачено"),
-            "failed": ("❌", "Ошибка"),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'authorized': ('⌛', 'Авторизовано'),
+            'completed': ('✅', 'Оплачено'),
+            'failed': ('❌', 'Ошибка'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
     if record.method == PaymentMethod.FREEKASSA:
         mapping = {
-            "pending": ("⏳", "Ожидает оплаты"),
-            "success": ("✅", "Оплачено"),
-            "paid": ("✅", "Оплачено"),
-            "canceled": ("❌", "Отменено"),
-            "error": ("❌", "Ошибка"),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'success': ('✅', 'Оплачено'),
+            'paid': ('✅', 'Оплачено'),
+            'canceled': ('❌', 'Отменено'),
+            'error': ('❌', 'Ошибка'),
         }
-        return mapping.get(status, ("❓", "Неизвестно"))
+        return mapping.get(status, ('❓', 'Неизвестно'))
 
-    return "❓", "Неизвестно"
+    return '❓', 'Неизвестно'
 
 
 def _is_checkable(record: PendingPayment) -> bool:
@@ -825,52 +849,50 @@ def _is_checkable(record: PendingPayment) -> bool:
         return False
     if not record.is_recent():
         return False
-    status = (record.status or "").lower()
+    status = (record.status or '').lower()
     if record.method == PaymentMethod.PAL24:
-        return status in {"new", "process"}
+        return status in {'new', 'process'}
     if record.method == PaymentMethod.MULENPAY:
-        return status in {"created", "processing", "hold"}
+        return status in {'created', 'processing', 'hold'}
     if record.method == PaymentMethod.WATA:
-        return status in {"opened", "pending", "processing", "inprogress", "in_progress"}
+        return status in {'opened', 'pending', 'processing', 'inprogress', 'in_progress'}
     if record.method == PaymentMethod.PLATEGA:
-        return status in {"pending", "inprogress", "in_progress"}
+        return status in {'pending', 'inprogress', 'in_progress'}
     if record.method == PaymentMethod.HELEKET:
-        return status not in {"paid", "paid_over", "cancel", "canceled", "fail", "failed", "expired"}
+        return status not in {'paid', 'paid_over', 'cancel', 'canceled', 'fail', 'failed', 'expired'}
     if record.method == PaymentMethod.YOOKASSA:
-        return status in {"pending", "waiting_for_capture"}
+        return status in {'pending', 'waiting_for_capture'}
     if record.method == PaymentMethod.CRYPTOBOT:
-        return status in {"active"}
+        return status in {'active'}
     if record.method == PaymentMethod.CLOUDPAYMENTS:
-        return status in {"pending", "authorized"}
+        return status in {'pending', 'authorized'}
     if record.method == PaymentMethod.FREEKASSA:
-        return status in {"pending", "created", "processing"}
+        return status in {'pending', 'created', 'processing'}
     return False
 
 
-def _get_payment_url(record: PendingPayment) -> Optional[str]:
+def _get_payment_url(record: PendingPayment) -> str | None:
     """Extract payment URL from record."""
     payment = record.payment
-    payment_url = getattr(payment, "payment_url", None)
+    payment_url = getattr(payment, 'payment_url', None)
 
     if record.method == PaymentMethod.PAL24:
-        payment_url = getattr(payment, "link_url", None) or getattr(payment, "link_page_url", None) or payment_url
+        payment_url = getattr(payment, 'link_url', None) or getattr(payment, 'link_page_url', None) or payment_url
     elif record.method == PaymentMethod.WATA:
-        payment_url = getattr(payment, "url", None) or payment_url
+        payment_url = getattr(payment, 'url', None) or payment_url
     elif record.method == PaymentMethod.YOOKASSA:
-        payment_url = getattr(payment, "confirmation_url", None) or payment_url
+        payment_url = getattr(payment, 'confirmation_url', None) or payment_url
     elif record.method == PaymentMethod.CRYPTOBOT:
         payment_url = (
-            getattr(payment, "bot_invoice_url", None)
-            or getattr(payment, "mini_app_invoice_url", None)
-            or getattr(payment, "web_app_invoice_url", None)
+            getattr(payment, 'bot_invoice_url', None)
+            or getattr(payment, 'mini_app_invoice_url', None)
+            or getattr(payment, 'web_app_invoice_url', None)
             or payment_url
         )
     elif record.method == PaymentMethod.PLATEGA:
-        payment_url = getattr(payment, "redirect_url", None) or payment_url
-    elif record.method == PaymentMethod.CLOUDPAYMENTS:
-        payment_url = getattr(payment, "payment_url", None) or payment_url
-    elif record.method == PaymentMethod.FREEKASSA:
-        payment_url = getattr(payment, "payment_url", None) or payment_url
+        payment_url = getattr(payment, 'redirect_url', None) or payment_url
+    elif record.method == PaymentMethod.CLOUDPAYMENTS or record.method == PaymentMethod.FREEKASSA:
+        payment_url = getattr(payment, 'payment_url', None) or payment_url
 
     return payment_url
 
@@ -885,7 +907,7 @@ def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
         identifier=record.identifier,
         amount_kopeks=record.amount_kopeks,
         amount_rubles=record.amount_kopeks / 100,
-        status=record.status or "",
+        status=record.status or '',
         status_emoji=status_emoji,
         status_text=status_text,
         is_paid=record.is_paid,
@@ -899,10 +921,10 @@ def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
     )
 
 
-@router.get("/pending-payments", response_model=PendingPaymentListResponse)
+@router.get('/pending-payments', response_model=PendingPaymentListResponse)
 async def get_pending_payments(
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(10, ge=1, le=50, description="Items per page"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(10, ge=1, le=50, description='Items per page'),
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
@@ -917,7 +939,7 @@ async def get_pending_payments(
 
     # Paginate
     start_idx = (page - 1) * per_page
-    page_payments = user_payments[start_idx:start_idx + per_page]
+    page_payments = user_payments[start_idx : start_idx + per_page]
 
     items = [_record_to_response(p) for p in page_payments]
 
@@ -930,7 +952,7 @@ async def get_pending_payments(
     )
 
 
-@router.get("/pending-payments/{method}/{payment_id}", response_model=PendingPaymentResponse)
+@router.get('/pending-payments/{method}/{payment_id}', response_model=PendingPaymentResponse)
 async def get_pending_payment_details(
     method: str,
     payment_id: int,
@@ -943,7 +965,7 @@ async def get_pending_payment_details(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid payment method: {method}",
+            detail=f'Invalid payment method: {method}',
         )
 
     record = await get_payment_record(db, payment_method, payment_id)
@@ -951,20 +973,20 @@ async def get_pending_payment_details(
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment not found",
+            detail='Payment not found',
         )
 
     # Check that payment belongs to the current user
     if not record.user or record.user.id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
+            detail='Access denied',
         )
 
     return _record_to_response(record)
 
 
-@router.post("/pending-payments/{method}/{payment_id}/check", response_model=ManualCheckResponse)
+@router.post('/pending-payments/{method}/{payment_id}/check', response_model=ManualCheckResponse)
 async def check_payment_status(
     method: str,
     payment_id: int,
@@ -977,7 +999,7 @@ async def check_payment_status(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid payment method: {method}",
+            detail=f'Invalid payment method: {method}',
         )
 
     # Get current record
@@ -986,21 +1008,21 @@ async def check_payment_status(
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment not found",
+            detail='Payment not found',
         )
 
     # Check that payment belongs to the current user
     if not record.user or record.user.id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
+            detail='Access denied',
         )
 
     # Check if manual check is available
     if not _is_checkable(record):
         return ManualCheckResponse(
             success=False,
-            message="Ручная проверка недоступна для этого платежа",
+            message='Ручная проверка недоступна для этого платежа',
             payment=_record_to_response(record),
             status_changed=False,
         )
@@ -1015,7 +1037,7 @@ async def check_payment_status(
     if not updated:
         return ManualCheckResponse(
             success=False,
-            message="Не удалось проверить статус платежа",
+            message='Не удалось проверить статус платежа',
             payment=_record_to_response(record),
             status_changed=False,
         )
@@ -1024,9 +1046,9 @@ async def check_payment_status(
 
     if status_changed:
         _, new_status_text = _get_status_info(updated)
-        message = f"Статус обновлён: {new_status_text}"
+        message = f'Статус обновлён: {new_status_text}'
     else:
-        message = "Статус не изменился"
+        message = 'Статус не изменился'
 
     return ManualCheckResponse(
         success=True,
