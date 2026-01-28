@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+import ipaddress
 from collections.abc import Iterable
 
 from aiogram import Bot
@@ -21,6 +22,61 @@ from app.external.wata_webhook import WataWebhookHandler
 from app.services.pal24_service import Pal24Service
 from app.services.payment_service import PaymentService
 from app.services.tribute_service import TributeService
+
+
+# --- Reverse-proxy aware IP resolution for webhooks (YooKassa) ---
+# We only trust X-Forwarded-For / X-Real-IP when the direct peer is a trusted
+# reverse proxy (e.g., Caddy on an internal / overlay network). This prevents
+# header spoofing from the public internet.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_trusted_reverse_proxy_ip(ip: str | None) -> bool:
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    # Common internal paths: loopback, RFC1918, Docker bridges, link-local, etc.
+    if addr.is_loopback or addr.is_private or addr.is_link_local:
+        return True
+    # NetBird and some overlays commonly use CGNAT space 100.64.0.0/10
+    if addr in _CGNAT_NET:
+        return True
+    return False
+
+
+def _first_valid_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    # X-Forwarded-For may be a comma-separated chain, we want the left-most IP.
+    for part in value.split(","):
+        candidate = part.strip()
+        if not candidate:
+            continue
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_webhook_client_ip(remote_ip: str | None, x_forwarded_for: str | None, x_real_ip: str | None, cf_connecting_ip: str | None) -> ipaddress._BaseAddress | None:
+    # Trust proxy headers only if the direct peer is a trusted reverse proxy.
+    if _is_trusted_reverse_proxy_ip(remote_ip):
+        ip_str = _first_valid_ip(x_real_ip) or _first_valid_ip(cf_connecting_ip) or _first_valid_ip(x_forwarded_for) or remote_ip
+    else:
+        # Untrusted peer: ignore headers to prevent spoofing
+        ip_str = remote_ip
+
+    if not ip_str:
+        return None
+    try:
+        return ipaddress.ip_address(ip_str)
+    except ValueError:
+        return None
 
 
 logger = logging.getLogger(__name__)
@@ -351,15 +407,22 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
         @router.post(settings.YOOKASSA_WEBHOOK_PATH)
         async def yookassa_webhook(request: Request) -> JSONResponse:
+            x_forwarded_for = request.headers.get('X-Forwarded-For')
+            x_real_ip = request.headers.get('X-Real-IP')
+            cf_connecting_ip = request.headers.get('Cf-Connecting-Ip')
+
             header_ip_candidates = yookassa_webhook_module.collect_yookassa_ip_candidates(
-                request.headers.get('X-Forwarded-For'),
-                request.headers.get('X-Real-IP'),
-                request.headers.get('Cf-Connecting-Ip'),
+                x_forwarded_for,
+                x_real_ip,
+                cf_connecting_ip,
             )
+
             remote_ip = request.client.host if request.client else None
-            client_ip = yookassa_webhook_module.resolve_yookassa_ip(
-                header_ip_candidates,
-                remote=remote_ip,
+            client_ip = _resolve_webhook_client_ip(
+                remote_ip=remote_ip,
+                x_forwarded_for=x_forwarded_for,
+                x_real_ip=x_real_ip,
+                cf_connecting_ip=cf_connecting_ip,
             )
 
             if client_ip is None:
