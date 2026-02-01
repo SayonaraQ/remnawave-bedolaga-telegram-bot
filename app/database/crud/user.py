@@ -408,29 +408,33 @@ async def add_user_balance(
         # Автоматическое возобновление приостановленной суточной подписки
         try:
             from app.database.crud.subscription import resume_daily_subscription
+            from app.database.crud.tariff import get_tariff_by_id
             from app.database.models import SubscriptionStatus
 
             subscription = user.subscription
             if subscription and subscription.status == SubscriptionStatus.DISABLED.value:
                 # Проверяем что это суточный тариф
                 is_daily = getattr(subscription, 'is_daily_tariff', False)
-                if is_daily and subscription.tariff:
-                    daily_price = getattr(subscription.tariff, 'daily_price_kopeks', 0)
-                    # Если баланс достаточный для суточной оплаты - возобновляем
-                    if daily_price > 0 and user.balance_kopeks >= daily_price:
-                        await resume_daily_subscription(db, subscription)
-                        logger.info(
-                            f'✅ Автоматически возобновлена суточная подписка {subscription.id} '
-                            f'после пополнения баланса (user_id={user.id})'
-                        )
-                        # Синхронизируем с RemnaWave
-                        try:
-                            from app.services.subscription_service import SubscriptionService
+                if is_daily and subscription.tariff_id:
+                    # Загружаем тариф явно, чтобы избежать lazy loading
+                    tariff = await get_tariff_by_id(db, subscription.tariff_id)
+                    if tariff:
+                        daily_price = getattr(tariff, 'daily_price_kopeks', 0)
+                        # Если баланс достаточный для суточной оплаты - возобновляем
+                        if daily_price > 0 and user.balance_kopeks >= daily_price:
+                            await resume_daily_subscription(db, subscription)
+                            logger.info(
+                                f'✅ Автоматически возобновлена суточная подписка {subscription.id} '
+                                f'после пополнения баланса (user_id={user.id})'
+                            )
+                            # Синхронизируем с RemnaWave
+                            try:
+                                from app.services.subscription_service import SubscriptionService
 
-                            subscription_service = SubscriptionService()
-                            await subscription_service.update_remnawave_user(db, subscription)
-                        except Exception as sync_err:
-                            logger.warning(f'Не удалось синхронизировать с RemnaWave: {sync_err}')
+                                subscription_service = SubscriptionService()
+                                await subscription_service.update_remnawave_user(db, subscription)
+                            except Exception as sync_err:
+                                logger.warning(f'Не удалось синхронизировать с RemnaWave: {sync_err}')
         except Exception as resume_err:
             logger.warning(f'Ошибка при попытке возобновить суточную подписку: {resume_err}')
 
@@ -686,6 +690,7 @@ async def get_users_list(
     offset: int = 0,
     limit: int = 50,
     search: str | None = None,
+    email: str | None = None,
     status: UserStatus | None = None,
     order_by_balance: bool = False,
     order_by_traffic: bool = False,
@@ -721,6 +726,9 @@ async def get_users_list(
                 pass
 
         query = query.where(or_(*conditions))
+
+    if email:
+        query = query.where(User.email.ilike(f'%{email}%'))
 
     sort_flags = [
         order_by_balance,
@@ -777,7 +785,9 @@ async def get_users_list(
     return users
 
 
-async def get_users_count(db: AsyncSession, status: UserStatus | None = None, search: str | None = None) -> int:
+async def get_users_count(
+    db: AsyncSession, status: UserStatus | None = None, search: str | None = None, email: str | None = None
+) -> int:
     query = select(func.count(User.id))
 
     if status:
@@ -802,6 +812,9 @@ async def get_users_count(db: AsyncSession, status: UserStatus | None = None, se
                 pass
 
         query = query.where(or_(*conditions))
+
+    if email:
+        query = query.where(User.email.ilike(f'%{email}%'))
 
     result = await db.execute(query)
     return result.scalar()
@@ -1099,3 +1112,125 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
     """Get user by email address."""
     result = await db.execute(select(User).where(User.email == email))
     return result.scalar_one_or_none()
+
+
+async def is_email_taken(db: AsyncSession, email: str, exclude_user_id: int | None = None) -> bool:
+    """
+    Check if email is already taken by another user.
+
+    Args:
+        db: Database session
+        email: Email to check
+        exclude_user_id: User ID to exclude from check (for current user)
+
+    Returns:
+        True if email is taken, False otherwise
+    """
+    query = select(User.id).where(User.email == email)
+    if exclude_user_id:
+        query = query.where(User.id != exclude_user_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none() is not None
+
+
+async def set_email_change_pending(
+    db: AsyncSession,
+    user: User,
+    new_email: str,
+    code: str,
+    expires_at: datetime,
+) -> User:
+    """
+    Set pending email change for user.
+
+    Args:
+        db: Database session
+        user: User object
+        new_email: New email address
+        code: 6-digit verification code
+        expires_at: Code expiration datetime
+
+    Returns:
+        Updated User object
+    """
+    user.email_change_new = new_email
+    user.email_change_code = code
+    user.email_change_expires = expires_at
+    user.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(user)
+
+    logger.info(f'Email change pending for user {user.id}: {user.email} -> {new_email}')
+    return user
+
+
+async def verify_and_apply_email_change(db: AsyncSession, user: User, code: str) -> tuple[bool, str]:
+    """
+    Verify email change code and apply the change.
+
+    Args:
+        db: Database session
+        user: User object
+        code: Verification code from user
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    if not user.email_change_new or not user.email_change_code:
+        return False, 'No pending email change'
+
+    if user.email_change_expires and datetime.utcnow() > user.email_change_expires:
+        # Clear expired data
+        user.email_change_new = None
+        user.email_change_code = None
+        user.email_change_expires = None
+        await db.commit()
+        return False, 'Verification code has expired'
+
+    if user.email_change_code != code:
+        return False, 'Invalid verification code'
+
+    # Check if new email is still available
+    existing = await get_user_by_email(db, user.email_change_new)
+    if existing and existing.id != user.id:
+        user.email_change_new = None
+        user.email_change_code = None
+        user.email_change_expires = None
+        await db.commit()
+        return False, 'This email is already taken'
+
+    old_email = user.email
+    new_email = user.email_change_new
+
+    # Apply the change
+    user.email = new_email
+    user.email_verified = True
+    user.email_verified_at = datetime.utcnow()
+    user.email_change_new = None
+    user.email_change_code = None
+    user.email_change_expires = None
+    user.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(user)
+
+    logger.info(f'Email changed for user {user.id}: {old_email} -> {new_email}')
+    return True, 'Email changed successfully'
+
+
+async def clear_email_change_pending(db: AsyncSession, user: User) -> None:
+    """
+    Clear pending email change data.
+
+    Args:
+        db: Database session
+        user: User object
+    """
+    user.email_change_new = None
+    user.email_change_code = None
+    user.email_change_expires = None
+    user.updated_at = datetime.utcnow()
+
+    await db.commit()
+    logger.info(f'Email change cancelled for user {user.id}')

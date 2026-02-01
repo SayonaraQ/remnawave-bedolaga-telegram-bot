@@ -991,6 +991,10 @@ class User(Base):
     password_reset_token = Column(String(255), nullable=True)
     password_reset_expires = Column(DateTime, nullable=True)
     cabinet_last_login = Column(DateTime, nullable=True)
+    # Email change fields
+    email_change_new = Column(String(255), nullable=True)  # New email pending verification
+    email_change_code = Column(String(6), nullable=True)  # 6-digit verification code
+    email_change_expires = Column(DateTime, nullable=True)  # Code expiration
     broadcasts = relationship('BroadcastHistory', back_populates='admin')
     referrals = relationship('User', backref='referrer', remote_side=[id], foreign_keys='User.referred_by_id')
     subscription = relationship('Subscription', back_populates='user', uselist=False)
@@ -1862,7 +1866,7 @@ class BroadcastHistory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     target_type = Column(String(100), nullable=False)
-    message_text = Column(Text, nullable=False)
+    message_text = Column(Text, nullable=True)  # Nullable for email-only broadcasts
     has_media = Column(Boolean, default=False)
     media_type = Column(String(20), nullable=True)
     media_file_id = Column(String(255), nullable=True)
@@ -1875,6 +1879,12 @@ class BroadcastHistory(Base):
     admin_name = Column(String(255))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Email broadcast fields
+    channel = Column(String(20), default='telegram', nullable=False)  # telegram|email|both
+    email_subject = Column(String(255), nullable=True)
+    email_html_content = Column(Text, nullable=True)
+
     admin = relationship('User', back_populates='broadcasts')
 
 
