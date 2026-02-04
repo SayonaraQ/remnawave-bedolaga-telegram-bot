@@ -16,6 +16,17 @@ from app.utils.subscription_utils import (
     get_happ_cryptolink_redirect_link,
 )
 
+def _has_callback_button(message: types.Message, callback_data: str) -> bool:
+    rm = getattr(message, "reply_markup", None)
+    if not rm or not getattr(rm, "inline_keyboard", None):
+        return False
+
+    for row in rm.inline_keyboard:
+        for btn in row:
+            if getattr(btn, "callback_data", None) == callback_data:
+                return True
+    return False
+
 
 async def handle_connect_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     # Проверяем, доступно ли сообщение для редактирования
@@ -40,6 +51,8 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
 
     connect_mode = settings.CONNECT_BUTTON_MODE
 
+    back_cb = 'back_to_menu' if callback.data == 'subscription_connect_main' else 'menu_subscription'
+
     if connect_mode == 'miniapp_subscription':
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -49,7 +62,7 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
                         web_app=types.WebAppInfo(url=subscription_link),
                     )
                 ],
-                [InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')],
+                [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
             ]
         )
 
@@ -83,7 +96,7 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
                         web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
                     )
                 ],
-                [InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')],
+                [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
             ]
         )
 
@@ -103,7 +116,7 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
         happ_row = get_happ_download_button_row(texts)
         if happ_row:
             rows.append(happ_row)
-        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
+        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -129,7 +142,7 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
         happ_row = get_happ_download_button_row(texts)
         if happ_row:
             rows.append(happ_row)
-        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
+        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -165,7 +178,9 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
             ).format(subscription_url=subscription_link)
 
         await callback.message.edit_text(
-            device_text, reply_markup=get_device_selection_keyboard(db_user.language), parse_mode='HTML'
+            device_text,
+            reply_markup=get_device_selection_keyboard(db_user.language, back_callback_data=back_cb),
+            parse_mode='HTML',
         )
 
     await callback.answer()

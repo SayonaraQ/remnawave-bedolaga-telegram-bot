@@ -51,6 +51,7 @@ class ButtonConditions(BaseModel):
     language_selection_enabled: bool | None = Field(default=None, description='Выбор языка включен')
     happ_enabled: bool | None = Field(default=None, description='Кнопка Happ включена')
     simple_subscription_enabled: bool | None = Field(default=None, description='Простая подписка включена')
+    traffic_topup_enabled: bool | None = Field(default=None, description='Докупка трафика включена')
     show_trial: bool | None = Field(default=None, description='Показать пробный период')
     show_buy: bool | None = Field(default=None, description='Показать кнопку покупки')
     has_saved_cart: bool | None = Field(default=None, description='Есть сохраненная корзина')

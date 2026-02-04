@@ -546,7 +546,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     await callback.message.edit_text(
         message,
         reply_markup=get_subscription_keyboard(
-            db_user.language, has_subscription=True, is_trial=subscription.is_trial, subscription=subscription
+            db_user.language, has_subscription=True, is_trial=subscription.is_trial, subscription=subscription, balance_kopeks=getattr(db_user, 'balance_kopeks', None),
         ),
         parse_mode='HTML',
     )
@@ -1078,7 +1078,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                                 web_app=types.WebAppInfo(url=subscription_link),
                             )
                         ],
@@ -1105,7 +1105,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                                 web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
                             )
                         ],
@@ -1121,7 +1121,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                 rows = [
                     [
                         InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                            text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                             url=subscription_link,
                         )
                     ]
@@ -1142,7 +1142,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                 rows = [
                     [
                         InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                            text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                             callback_data='open_subscription_link',
                         )
                     ]
@@ -1164,7 +1164,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                                 callback_data='subscription_connect',
                             )
                         ],
@@ -2832,7 +2832,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                                 web_app=types.WebAppInfo(url=subscription_link),
                             )
                         ],
@@ -2859,7 +2859,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                                 web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
                             )
                         ],
@@ -2873,7 +2873,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 )
             elif connect_mode == 'link':
                 rows = [
-                    [InlineKeyboardButton(text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'), url=subscription_link)]
+                    [InlineKeyboardButton(text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'), url=subscription_link)]
                 ]
                 happ_row = get_happ_download_button_row(texts)
                 if happ_row:
@@ -2890,7 +2890,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 rows = [
                     [
                         InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                            text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                             callback_data='open_subscription_link',
                         )
                     ]
@@ -2911,7 +2911,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'), callback_data='subscription_connect'
+                                text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'), callback_data='subscription_connect'
                             )
                         ],
                         [
@@ -3437,7 +3437,7 @@ def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: s
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                        text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                         web_app=types.WebAppInfo(url=subscription_link),
                     )
                 ],
@@ -3457,7 +3457,7 @@ def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: s
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                        text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                         web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
                     )
                 ],
@@ -3473,7 +3473,7 @@ def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: s
         rows = [
             [
                 InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                    text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                     url=subscription_link,
                 )
             ]
@@ -3494,7 +3494,7 @@ def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: s
         rows = [
             [
                 InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                    text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                     callback_data='open_subscription_link',
                 )
             ]
@@ -3515,7 +3515,7 @@ def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: s
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
+                    text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
                     callback_data='subscription_connect',
                 )
             ],
@@ -4088,6 +4088,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_happ_download_back, F.data == 'happ_download_back')
 
     dp.callback_query.register(handle_connect_subscription, F.data == 'subscription_connect')
+
+    dp.callback_query.register(handle_connect_subscription, F.data == 'subscription_connect_main')
 
     dp.callback_query.register(handle_device_guide, F.data.startswith('device_guide_'))
 
