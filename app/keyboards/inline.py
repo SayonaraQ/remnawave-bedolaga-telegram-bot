@@ -1866,16 +1866,7 @@ def get_add_traffic_keyboard_from_tariff(
         subscription_end_date: Дата окончания подписки для расчета цены
         discount_percent: Процент скидки
     """
-    from app.utils.pricing_utils import get_remaining_months
-
     texts = get_texts(language)
-
-    months_multiplier = 1
-    period_text = ''
-    if subscription_end_date:
-        months_multiplier = get_remaining_months(subscription_end_date)
-        if months_multiplier > 1:
-            period_text = f' (за {months_multiplier} мес)'
 
     if not packages:
         return InlineKeyboardMarkup(
@@ -1895,21 +1886,23 @@ def get_add_traffic_keyboard_from_tariff(
     # Сортируем пакеты по размеру
     sorted_packages = sorted(packages.items(), key=lambda x: x[0])
 
+    # Пакеты трафика на тарифах покупаются на 1 месяц (30 дней),
+    # цена в тарифе уже месячная — не умножаем на оставшиеся месяцы подписки
     for gb, price_per_month in sorted_packages:
-        discounted_per_month, discount_per_month = apply_percentage_discount(
+        discounted_price, discount_value = apply_percentage_discount(
             price_per_month,
             discount_percent,
         )
-        total_price = discounted_per_month * months_multiplier
-        total_discount = discount_per_month * months_multiplier
+
+        period_text = ' /мес' if language == 'ru' else ' /mo'
 
         if language == 'ru':
-            text = f'📊 +{gb} ГБ трафика - {total_price // 100} ₽{period_text}'
+            text = f'📊 +{gb} ГБ трафика - {discounted_price // 100} ₽{period_text}'
         else:
-            text = f'📊 +{gb} GB traffic - {total_price // 100} ₽{period_text}'
+            text = f'📊 +{gb} GB traffic - {discounted_price // 100} ₽{period_text}'
 
-        if discount_percent > 0 and total_discount > 0:
-            text += f' (скидка {discount_percent}%: -{total_discount // 100}₽)'
+        if discount_percent > 0 and discount_value > 0:
+            text += f' (скидка {discount_percent}%: -{discount_value // 100}₽)'
 
         buttons.append([InlineKeyboardButton(text=text, callback_data=f'add_traffic_{gb}')])
 
@@ -1972,7 +1965,11 @@ def get_change_devices_keyboard(
     else:
         max_devices = settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else 20
 
-    start_range = max(1, min(current_devices - 3, max_devices - 6))
+    # Минимальное количество устройств: device_limit тарифа или 1
+    tariff_min_devices = (getattr(tariff, 'device_limit', 1) or 1) if tariff else 1
+    min_devices = max(1, tariff_min_devices)
+
+    start_range = max(min_devices, min(current_devices - 3, max_devices - 6))
     end_range = min(max_devices + 1, max(current_devices + 4, 7))
 
     for devices_count in range(start_range, end_range):
@@ -2071,7 +2068,7 @@ def get_reset_traffic_confirm_keyboard(
             [
                 InlineKeyboardButton(
                     text=texts.t('TOPUP_BALANCE_BUTTON', '💳 Пополнить баланс'),
-                    callback_data=f'topup_amount_{missing_kopeks}',
+                    callback_data='balance_topup',
                 )
             ]
         )

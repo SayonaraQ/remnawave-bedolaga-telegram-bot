@@ -89,15 +89,16 @@ def error_handler(func: Callable) -> Callable:
                         await event.answer()
                     except TelegramBadRequest as answer_error:
                         if 'query is too old' not in str(answer_error).lower():
-                            logger.error(f'Ошибка при ответе на callback: {answer_error}')
+                            logger.error(f'Ошибка при ответе на callback в {func.__name__}: {answer_error}')
                 return None
 
             logger.error(f'Telegram API error в {func.__name__}: {e}')
-            await _send_error_message(args, kwargs, e)
+            # Уведомление отправляется в _send_error_message
+            await _send_error_message(args, kwargs, e, func.__name__)
 
         except Exception as e:
             logger.error(f'Ошибка в {func.__name__}: {e}', exc_info=True)
-            await _send_error_message(args, kwargs, e)
+            await _send_error_message(args, kwargs, e, func.__name__)
 
     return wrapper
 
@@ -109,11 +110,12 @@ def _extract_event(args) -> types.TelegramObject:
     return None
 
 
-async def _send_error_message(args, kwargs, original_error):
-    try:
-        event = _extract_event(args)
-        db_user = kwargs.get('db_user')
+async def _send_error_message(args, kwargs, original_error, func_name: str = 'unknown'):
+    event = _extract_event(args)
+    db_user = kwargs.get('db_user')
 
+    # Отправляем сообщение пользователю
+    try:
         if not event:
             return
 
@@ -128,9 +130,9 @@ async def _send_error_message(args, kwargs, original_error):
         if 'query is too old' in str(e).lower():
             logger.warning('Не удалось отправить сообщение об ошибке - callback query устарел')
         else:
-            logger.error(f'Ошибка при отправке сообщения об ошибке: {e}')
+            logger.warning(f'Ошибка при отправке сообщения об ошибке: {e}')
     except Exception as e:
-        logger.error(f'Критическая ошибка при отправке сообщения об ошибке: {e}')
+        logger.warning(f'Критическая ошибка при отправке сообщения об ошибке: {e}')
 
 
 def state_cleanup(func: Callable) -> Callable:
