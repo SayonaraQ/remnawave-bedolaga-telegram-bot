@@ -1007,7 +1007,7 @@
   "DEVICE_GUIDE_ANDROID_TV": "📺 Android TV",
   "DEVICE_GUIDE_APPLE_TV": "📺 Apple TV",
   "DEVICE_GUIDE_IOS": "📱 iOS (iPhone/iPad)",
-  "DEVICE_GUIDE_MAC": "🎯 macOS",
+  "DEVICE_GUIDE_MAC": "🍏 MacOS",
   "DEVICE_GUIDE_WINDOWS": "💻 Windows",
   "DEVICE_LIST_FETCH_ERROR": "❌ Ошибка получения списка устройств",
   "DEVICE_MANAGEMENT_ACTIONS": "\n💡 <b>Действия:</b>\n• Выберите устройство для сброса\n• Или сбросьте все устройства сразу",
