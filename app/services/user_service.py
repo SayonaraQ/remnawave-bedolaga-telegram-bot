@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram import Bot, types
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,9 +30,11 @@ from app.database.models import (
     AdvertisingCampaign,
     AdvertisingCampaignRegistration,
     BroadcastHistory,
+    CloudPaymentsPayment,
     CryptoBotPayment,
     FreekassaPayment,
     HeleketPayment,
+    KassaAiPayment,
     MulenPayPayment,
     Pal24Payment,
     PaymentMethod,
@@ -338,6 +340,72 @@ class UserService:
 
         except Exception as e:
             logger.error(f'Ошибка получения пользователей для продления: {e}')
+            return {
+                'users': [],
+                'current_page': 1,
+                'total_pages': 1,
+                'total_count': 0,
+            }
+
+    async def get_potential_customers(
+        self,
+        db: AsyncSession,
+        min_balance_kopeks: int,
+        page: int = 1,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Возвращает пользователей без активной подписки с достаточным балансом."""
+        try:
+            offset = (page - 1) * limit
+
+            # Фильтры: нет активной подписки И баланс >= порога
+            base_filters = [
+                User.balance_kopeks >= min_balance_kopeks,
+            ]
+
+            # Основной запрос с LEFT JOIN для поддержки пользователей без подписки
+            query = (
+                select(User)
+                .options(selectinload(User.subscription))
+                .outerjoin(Subscription, Subscription.user_id == User.id)
+                .where(
+                    *base_filters,
+                    or_(
+                        User.subscription == None,
+                        ~Subscription.status.in_(['active', 'trial']),
+                    ),
+                )
+                .order_by(User.balance_kopeks.desc(), User.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            result = await db.execute(query)
+            users = result.scalars().unique().all()
+
+            # Запрос для подсчета общего количества
+            count_query = (
+                select(func.count(User.id))
+                .outerjoin(Subscription, Subscription.user_id == User.id)
+                .where(
+                    *base_filters,
+                    or_(
+                        User.subscription == None,
+                        ~Subscription.status.in_(['active', 'trial']),
+                    ),
+                )
+            )
+            total_count = (await db.execute(count_query)).scalar() or 0
+            total_pages = (total_count + limit - 1) // limit if total_count else 0
+
+            return {
+                'users': users,
+                'current_page': page,
+                'total_pages': total_pages,
+                'total_count': total_count,
+            }
+
+        except Exception as e:
+            logger.error(f'Ошибка получения потенциальных клиентов: {e}')
             return {
                 'users': [],
                 'current_page': 1,
@@ -891,6 +959,58 @@ class UserService:
             except Exception as e:
                 logger.error(f'❌ Ошибка удаления Freekassa платежей: {e}')
 
+            # Удаляем Wata платежи (до транзакций, т.к. wata_payments.transaction_id -> transactions.id)
+            try:
+                wata_payments_result = await db.execute(select(WataPayment).where(WataPayment.user_id == user_id))
+                wata_payments = wata_payments_result.scalars().all()
+
+                if wata_payments:
+                    logger.info(f'🔄 Удаляем {len(wata_payments)} Wata платежей')
+                    await db.execute(
+                        update(WataPayment).where(WataPayment.user_id == user_id).values(transaction_id=None)
+                    )
+                    await db.flush()
+                    await db.execute(delete(WataPayment).where(WataPayment.user_id == user_id))
+                    await db.flush()
+            except Exception as e:
+                logger.error(f'❌ Ошибка удаления Wata платежей: {e}')
+
+            # Удаляем CloudPayments платежи
+            try:
+                cloudpayments_result = await db.execute(
+                    select(CloudPaymentsPayment).where(CloudPaymentsPayment.user_id == user_id)
+                )
+                cloudpayments_payments = cloudpayments_result.scalars().all()
+
+                if cloudpayments_payments:
+                    logger.info(f'🔄 Удаляем {len(cloudpayments_payments)} CloudPayments платежей')
+                    await db.execute(
+                        update(CloudPaymentsPayment)
+                        .where(CloudPaymentsPayment.user_id == user_id)
+                        .values(transaction_id=None)
+                    )
+                    await db.flush()
+                    await db.execute(delete(CloudPaymentsPayment).where(CloudPaymentsPayment.user_id == user_id))
+                    await db.flush()
+            except Exception as e:
+                logger.error(f'❌ Ошибка удаления CloudPayments платежей: {e}')
+
+            # Удаляем KassaAi платежи
+            try:
+                kassa_ai_result = await db.execute(select(KassaAiPayment).where(KassaAiPayment.user_id == user_id))
+                kassa_ai_payments = kassa_ai_result.scalars().all()
+
+                if kassa_ai_payments:
+                    logger.info(f'🔄 Удаляем {len(kassa_ai_payments)} KassaAi платежей')
+                    await db.execute(
+                        update(KassaAiPayment).where(KassaAiPayment.user_id == user_id).values(transaction_id=None)
+                    )
+                    await db.flush()
+                    await db.execute(delete(KassaAiPayment).where(KassaAiPayment.user_id == user_id))
+                    await db.flush()
+            except Exception as e:
+                logger.error(f'❌ Ошибка удаления KassaAi платежей: {e}')
+
             try:
                 transactions_result = await db.execute(select(Transaction).where(Transaction.user_id == user_id))
                 transactions = transactions_result.scalars().all()
@@ -989,17 +1109,6 @@ class UserService:
                     await db.flush()
             except Exception as e:
                 logger.error(f'❌ Ошибка удаления подписки: {e}')
-
-            try:
-                wata_payments_result = await db.execute(select(WataPayment).where(WataPayment.user_id == user_id))
-                wata_payments = wata_payments_result.scalars().all()
-
-                if wata_payments:
-                    logger.info(f'🔄 Удаляем {len(wata_payments)} Wata платежей')
-                    await db.execute(delete(WataPayment).where(WataPayment.user_id == user_id))
-                    await db.flush()
-            except Exception as e:
-                logger.error(f'❌ Ошибка удаления Wata платежей: {e}')
 
             try:
                 await db.execute(delete(User).where(User.id == user_id))

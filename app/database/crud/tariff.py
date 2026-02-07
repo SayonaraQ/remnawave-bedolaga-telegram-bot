@@ -233,6 +233,8 @@ async def create_tariff(
     if promo_group_ids:
         promo_groups_result = await db.execute(select(PromoGroup).where(PromoGroup.id.in_(promo_group_ids)))
         promo_groups = promo_groups_result.scalars().all()
+        # Refresh чтобы избежать lazy load в async контексте
+        await db.refresh(tariff, ['allowed_promo_groups'])
         tariff.allowed_promo_groups = list(promo_groups)
 
     await db.commit()
@@ -483,8 +485,6 @@ async def reorder_tariffs(
     """Изменяет порядок отображения тарифов."""
     for order, tariff_id in enumerate(tariff_order):
         await db.execute(update(Tariff).where(Tariff.id == tariff_id).values(display_order=order))
-
-    await db.commit()
 
     logger.info('Изменен порядок тарифов: %s', tariff_order)
 
