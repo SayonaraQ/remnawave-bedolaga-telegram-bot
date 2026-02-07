@@ -223,6 +223,36 @@ async def show_main_menu(
     if not skip_callback_answer:
         await callback.answer()
 
+async def show_bonuses_menu(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    db_user: User,
+    db: AsyncSession,
+):
+    if db_user is None:
+        texts = get_texts(settings.DEFAULT_LANGUAGE_CODE)
+        await callback.answer(texts.t('USER_NOT_FOUND_ERROR', 'Ошибка: пользователь не найден.'), show_alert=True)
+        return
+
+    await state.clear()
+    texts = get_texts(db_user.language)
+
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text='🤝 Партнёрка', callback_data='menu_referrals'),
+                types.InlineKeyboardButton(text='🎫 Промокод', callback_data='menu_promocode'),
+            ],
+            [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
+        ]
+    )
+
+    await callback.message.edit_text(
+        '🎁 <b>Бонусы</b>\n\nВыберите раздел:',
+        reply_markup=keyboard,
+        parse_mode='HTML',
+    )
+    await callback.answer()
 
 async def handle_profile_unavailable(callback: types.CallbackQuery) -> None:
     language = getattr(callback.from_user, 'language_code', None) or settings.DEFAULT_LANGUAGE
@@ -1383,6 +1413,8 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
 
 def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_back_to_menu, F.data == 'back_to_menu')
+
+    dp.callback_query.register(show_bonuses_menu, F.data == 'menu_bonuses')
 
     dp.callback_query.register(
         handle_profile_unavailable,
