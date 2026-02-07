@@ -219,8 +219,8 @@ async def show_balance_menu(callback: types.CallbackQuery, db_user: User, db: As
     texts = get_texts(db_user.language)
 
     balance_text = texts.BALANCE_INFO.format(balance=texts.format_price(db_user.balance_kopeks))
-
-    reply_markup = get_balance_keyboard(db_user.language)
+    back_cb = 'menu_subscription' if callback.data == 'subscription_balance' else 'back_to_menu'
+    reply_markup = get_balance_keyboard(db_user.language, back_callback=back_cb)
 
     try:
         if callback.message and callback.message.text:
@@ -760,7 +760,7 @@ async def handle_topup_amount_callback(
 
 
 def register_balance_handlers(dp: Dispatcher):
-    dp.callback_query.register(show_balance_menu, F.data == 'menu_balance')
+    dp.callback_query.register(show_balance_menu, F.data.in_(['menu_balance', 'subscription_balance']))
 
     dp.callback_query.register(show_balance_history, F.data == 'balance_history')
 

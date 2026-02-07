@@ -1278,15 +1278,17 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
     )
 
     if hide_subscription_link:
-        link_section = (
-                texts.t("SUBSCRIPTION_DEVICE_LINK_TITLE", "🔗 <b>Ссылка подписки:</b>")
-                + "\n"
-                + texts.t(
-            "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
-            "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» ниже или в разделе \"Моя подписка\".",
-        )
-                + "\n\n"
-        )
+        # Скрываем уведомление о ссылке подписки по запросу.
+        # link_section = (
+        #         texts.t("SUBSCRIPTION_DEVICE_LINK_TITLE", "🔗 <b>Ссылка подписки:</b>")
+        #         + "\n"
+        #         + texts.t(
+        #     "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
+        #     "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» ниже или в разделе \"Моя подписка\".",
+        # )
+        #         + "\n\n"
+        # )
+        link_section = ''
     else:
         link_section = (
             texts.t('SUBSCRIPTION_DEVICE_LINK_TITLE', '🔗 <b>Ссылка подписки:</b>')
@@ -1320,14 +1322,19 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
         ).format(app_name=featured_app.get('name', ''))
     )
 
+    other_apps_section = ''
     if other_app_names:
-        guide_text += '\n\n' + texts.t(
-            'SUBSCRIPTION_DEVICE_OTHER_APPS',
-            '📦 <b>Другие приложения:</b> {app_list}',
-        ).format(app_list=other_app_names)
-        guide_text += '\n' + texts.t(
-            'SUBSCRIPTION_DEVICE_OTHER_APPS_HINT',
-            'Нажмите кнопку "Другие приложения" ниже, чтобы выбрать приложение.',
+        other_apps_section = (
+            '\n\n'
+            + texts.t(
+                'SUBSCRIPTION_DEVICE_OTHER_APPS',
+                '📦 <b>Другие приложения:</b> {app_list}',
+            ).format(app_list=other_app_names)
+            + '\n'
+            + texts.t(
+                'SUBSCRIPTION_DEVICE_OTHER_APPS_HINT',
+                'Нажмите кнопку "Другие приложения" ниже, чтобы выбрать приложение.',
+            )
         )
 
     guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_INSTALL_TITLE', '<b>Шаг 1 - Установка:</b>')
@@ -1369,6 +1376,9 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
 
     if additional_after_text:
         guide_text += f'\n\n{additional_after_text}'
+
+    if other_apps_section:
+        guide_text += other_apps_section
 
     await callback.message.edit_text(
         guide_text,
@@ -1439,15 +1449,17 @@ async def handle_specific_app_guide(callback: types.CallbackQuery, db_user: User
     hide_subscription_link = settings.should_hide_subscription_link()
 
     if hide_subscription_link:
-        link_section = (
-                texts.t("SUBSCRIPTION_DEVICE_LINK_TITLE", "🔗 <b>Ссылка подписки:</b>")
-                + "\n"
-                + texts.t(
-            "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
-            "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» или в разделе \"Моя подписка\".",
-        )
-                + "\n\n"
-        )
+        # Скрываем уведомление о ссылке подписки по запросу.
+        # link_section = (
+        #         texts.t("SUBSCRIPTION_DEVICE_LINK_TITLE", "🔗 <b>Ссылка подписки:</b>")
+        #         + "\n"
+        #         + texts.t(
+        #     "SUBSCRIPTION_LINK_HIDDEN_NOTICE",
+        #     "ℹ️ Ссылка подписки доступна по кнопке «Показать ссылку подписки» или в разделе \"Моя подписка\".",
+        # )
+        #         + "\n\n"
+        # )
+        link_section = ''
     else:
         link_section = (
             texts.t('SUBSCRIPTION_DEVICE_LINK_TITLE', '🔗 <b>Ссылка подписки:</b>')
