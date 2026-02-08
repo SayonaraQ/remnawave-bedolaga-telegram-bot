@@ -134,6 +134,10 @@ from .countries import (
 )
 from .devices import (
     confirm_add_devices,
+    handle_android_tv_connect,
+    handle_android_tv_qr_cancel,
+    handle_android_tv_qr_non_photo,
+    handle_android_tv_qr_photo,
     confirm_change_devices,
     confirm_reset_devices,
     execute_change_devices,
@@ -4079,6 +4083,10 @@ def register_handlers(dp: Dispatcher):
 
     dp.callback_query.register(handle_device_guide, F.data.startswith('device_guide_'))
 
+    dp.callback_query.register(handle_android_tv_connect, F.data == 'android_tv_connect')
+
+    dp.callback_query.register(handle_android_tv_qr_cancel, F.data == 'android_tv_qr_cancel')
+
     dp.callback_query.register(handle_app_selection, F.data.startswith('app_list_'))
 
     dp.callback_query.register(handle_specific_app_guide, F.data.startswith('app_'))
@@ -4100,6 +4108,17 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_all_devices_reset_from_management, F.data == 'reset_all_devices')
 
     dp.callback_query.register(show_device_connection_help, F.data == 'device_connection_help')
+
+    dp.message.register(
+        handle_android_tv_qr_photo,
+        SubscriptionStates.waiting_for_android_tv_qr_photo,
+        F.photo,
+    )
+    dp.message.register(
+        handle_android_tv_qr_non_photo,
+        SubscriptionStates.waiting_for_android_tv_qr_photo,
+        ~F.photo,
+    )
 
     # Регистрируем обработчики модема
     from .modem import register_modem_handlers

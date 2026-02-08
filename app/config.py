@@ -524,6 +524,10 @@ class Settings(BaseSettings):
     HAPP_DOWNLOAD_LINK_MACOS: str | None = None
     HAPP_DOWNLOAD_LINK_WINDOWS: str | None = None
     HAPP_DOWNLOAD_LINK_PC: str | None = None
+    ANDROID_TV_STREAMVAULT_WS_URL: str = 'wss://streamvault.fcknrockn.net/'
+    ANDROID_TV_STREAMVAULT_ORIGIN: str = 'https://streamvault.fcknrockn.net'
+    ANDROID_TV_STREAMVAULT_USER_AGENT: str = 'okhttp/3.10.0'
+    ANDROID_TV_STREAMVAULT_TIMEOUT_SECONDS: int = 10
     HIDE_SUBSCRIPTION_LINK: bool = False
     ENABLE_LOGO_MODE: bool = True
     LOGO_FILE: str = 'vpn_logo.png'

@@ -18,6 +18,7 @@ dependencies = [
     'python-dateutil>=2.9.0.post0',
     'cryptography>=41.0.0',
     'qrcode[pil]>=7.4.2',
+    'pyzbar>=0.1.9',
     'packaging>=23.2',
     'bcrypt>=4.2.0',
     'pyjwt>=2.8.0',

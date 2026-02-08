@@ -24,6 +24,7 @@ class SubscriptionStates(StatesGroup):
 
     # Состояния для простой подписки
     waiting_for_simple_subscription_payment_method = State()
+    waiting_for_android_tv_qr_photo = State()
 
     # Состояния для кастомных дней/трафика при покупке тарифа
     selecting_custom_days = State()
