@@ -20,6 +20,7 @@ ARG VCS_REF
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
+    libzbar0 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

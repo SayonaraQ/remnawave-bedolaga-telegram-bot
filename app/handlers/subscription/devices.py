@@ -1,6 +1,8 @@
 from datetime import datetime
+from io import BytesIO
 
 from aiogram import types
+from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -10,6 +12,7 @@ from app.database.crud.user import subtract_user_balance
 from app.database.models import TransactionType, User
 from app.keyboards.inline import (
     get_app_selection_keyboard,
+    get_android_tv_qr_wait_keyboard,
     get_back_keyboard,
     get_change_devices_keyboard,
     get_confirm_change_devices_keyboard,
@@ -22,9 +25,16 @@ from app.keyboards.inline import (
     get_tv_selection_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.android_tv_import_service import (
+    AndroidTvQrDecodeError,
+    AndroidTvStreamVaultError,
+    decode_android_tv_qr_key,
+    publish_streamvault_subscription,
+)
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
+from app.states import SubscriptionStates
 from app.utils.pagination import paginate_list
 from app.utils.pricing_utils import (
     apply_percentage_discount,
@@ -1271,6 +1281,36 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
     featured_app_id = featured_app.get('id')
     other_apps = [app for app in apps if isinstance(app, dict) and app.get('id') and app.get('id') != featured_app_id]
 
+    if device_type == 'tv':
+        featured_app_name = str(featured_app.get('name') or 'v2rayTun')
+        android_tv_guide_text = texts.t(
+            'ANDROID_TV_GUIDE_MESSAGE',
+            (
+                '📺 <b>Настройка для Android TV</b>\n\n'
+                '📋 <b>Рекомендуемое приложение:</b> {app_name}\n\n'
+                '<b>Шаг 1 - Установка:</b>\n'
+                'Установите {app_name} на Android TV (есть в Google Play).\n\n'
+                '<b>Шаг 2 - Добавление подписки:</b>\n'
+                'Нажмите «Управление» — «Импорт с телефона» и СФОТОГРАФИРУЙТЕ QR-код на экране телевизора.\n\n'
+                '<b>Шаг 3 - Подключение:</b>\n'
+                'Если приложение уже установлено, нажмите кнопку «Подключиться».'
+            ),
+        ).format(app_name=featured_app_name)
+
+        await callback.message.edit_text(
+            android_tv_guide_text,
+            reply_markup=get_connection_guide_keyboard(
+                subscription_link,
+                featured_app,
+                device_type,
+                db_user.language,
+                has_other_apps=False,
+            ),
+            parse_mode='HTML',
+        )
+        await callback.answer()
+        return
+
     other_app_names = ', '.join(
         str(app.get('name')).strip()
         for app in other_apps
@@ -1392,6 +1432,174 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
         parse_mode='HTML',
     )
     await callback.answer()
+
+
+async def handle_android_tv_connect(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+    texts = get_texts(db_user.language)
+    subscription_link = get_display_subscription_link(db_user.subscription)
+
+    if not subscription_link:
+        await callback.answer(
+            texts.t('SUBSCRIPTION_LINK_UNAVAILABLE', '❌ Ссылка подписки недоступна'),
+            show_alert=True,
+        )
+        return
+
+    await state.update_data(android_tv_subscription_url=subscription_link)
+    await state.set_state(SubscriptionStates.waiting_for_android_tv_qr_photo)
+
+    await callback.message.answer(
+        texts.t(
+            'ANDROID_TV_QR_PROMPT',
+            (
+                '📸 Сфотографируй QR-код с экрана телевизора в разделе '
+                '«Управление» - «Импорт с телефона» и пришли мне.'
+            ),
+        ),
+        reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+    )
+    await callback.answer()
+
+
+async def handle_android_tv_qr_cancel(callback: types.CallbackQuery, db_user: User, state: FSMContext):
+    texts = get_texts(db_user.language)
+    await state.clear()
+    await callback.message.edit_text(
+        texts.t('ANDROID_TV_QR_CANCELLED', '❌ Ожидание QR-кода отменено.'),
+        reply_markup=get_back_keyboard(db_user.language),
+    )
+    await callback.answer()
+
+
+async def _download_photo_bytes(message: types.Message) -> bytes:
+    if not message.photo:
+        return b''
+
+    file = await message.bot.get_file(message.photo[-1].file_id)
+    buffer = BytesIO()
+    await message.bot.download_file(file.file_path, destination=buffer)
+    return buffer.getvalue()
+
+
+async def handle_android_tv_qr_photo(message: types.Message, db_user: User, state: FSMContext):
+    texts = get_texts(db_user.language)
+
+    state_data = await state.get_data()
+    subscription_link = state_data.get('android_tv_subscription_url')
+    if not isinstance(subscription_link, str) or not subscription_link.strip():
+        subscription_link = get_display_subscription_link(db_user.subscription)
+
+    if not subscription_link:
+        await state.clear()
+        await message.answer(
+            texts.t('SUBSCRIPTION_LINK_UNAVAILABLE', '❌ Ссылка подписки недоступна'),
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+        return
+
+    try:
+        image_bytes = await _download_photo_bytes(message)
+    except Exception as exc:
+        logger.error(f'Ошибка загрузки фото QR для Android TV: {exc}')
+        await message.answer(
+            texts.t(
+                'ANDROID_TV_QR_DOWNLOAD_ERROR',
+                '❌ Не удалось загрузить фото. Отправьте изображение QR-кода ещё раз.',
+            ),
+            reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+        )
+        return
+
+    try:
+        streamvault_key = decode_android_tv_qr_key(image_bytes)
+    except AndroidTvQrDecodeError as exc:
+        logger.warning(f'Не удалось декодировать Android TV QR: {exc}')
+        await message.answer(
+            texts.t(
+                'ANDROID_TV_QR_DECODE_ERROR',
+                (
+                    '❌ Не удалось распознать QR-код. Убедись, что QR-код целиком в кадре, '
+                    'и отправь фото ещё раз.'
+                ),
+            ),
+            reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+        )
+        return
+    except Exception as exc:
+        logger.error(f'Ошибка декодирования QR для Android TV: {exc}')
+        await message.answer(
+            texts.t(
+                'ANDROID_TV_QR_DECODE_ERROR',
+                (
+                    '❌ Не удалось распознать QR-код. Убедись, что QR-код целиком в кадре, '
+                    'и отправь фото ещё раз.'
+                ),
+            ),
+            reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+        )
+        return
+
+    try:
+        response = await publish_streamvault_subscription(streamvault_key, subscription_link)
+        logger.info(
+            'Android TV import sent for user %s using key %s...%s (response=%s)',
+            db_user.telegram_id,
+            streamvault_key[:6],
+            streamvault_key[-4:],
+            response,
+        )
+    except AndroidTvStreamVaultError as exc:
+        logger.warning(f'Не удалось отправить Android TV импорт: {exc}')
+        await message.answer(
+            texts.t(
+                'ANDROID_TV_STREAMVAULT_ERROR',
+                (
+                    '❌ QR-код распознан, но не удалось отправить подписку на телевизор. '
+                    'Попробуй отправить фото ещё раз.'
+                ),
+            ),
+            reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+        )
+        return
+    except Exception as exc:
+        logger.error(f'Неожиданная ошибка отправки Android TV импорта: {exc}')
+        await message.answer(
+            texts.t(
+                'ANDROID_TV_STREAMVAULT_ERROR',
+                (
+                    '❌ QR-код распознан, но не удалось отправить подписку на телевизор. '
+                    'Попробуй отправить фото ещё раз.'
+                ),
+            ),
+            reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+        )
+        return
+
+    await state.clear()
+    await message.answer(
+        texts.t(
+            'ANDROID_TV_IMPORT_SUCCESS',
+            (
+                '✅ Подписка отправлена на телевизор.\n\n'
+                'Открой {app_name} на Android TV и дождись импорта.'
+            ),
+        ).format(app_name='v2rayTun'),
+        reply_markup=get_back_keyboard(db_user.language),
+    )
+
+
+async def handle_android_tv_qr_non_photo(message: types.Message, db_user: User):
+    texts = get_texts(db_user.language)
+    await message.answer(
+        texts.t(
+            'ANDROID_TV_EXPECT_PHOTO',
+            (
+                '📸 Сейчас ожидаю фотографию QR-кода с экрана телевизора.\n'
+                'Отправь фото в этот чат.'
+            ),
+        ),
+        reply_markup=get_android_tv_qr_wait_keyboard(db_user.language),
+    )
 
 
 async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db: AsyncSession):

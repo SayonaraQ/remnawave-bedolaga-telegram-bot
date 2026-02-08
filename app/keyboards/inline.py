@@ -2230,6 +2230,25 @@ def get_tv_selection_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboar
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
+def _is_android_tv_device(device_type: str) -> bool:
+    return device_type == 'tv'
+
+
+def get_android_tv_qr_wait_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+    texts = get_texts(language)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=texts.t('CANCEL_BUTTON', '❌ Отмена'),
+                    callback_data='android_tv_qr_cancel',
+                )
+            ]
+        ]
+    )
+
+
 def get_connection_guide_keyboard(
     subscription_url: str,
     app: dict,
@@ -2240,10 +2259,11 @@ def get_connection_guide_keyboard(
     from app.handlers.subscription import create_deep_link
 
     texts = get_texts(language)
+    is_android_tv = _is_android_tv_device(device_type)
 
     keyboard = []
 
-    if 'installationStep' in app and 'buttons' in app['installationStep']:
+    if not is_android_tv and 'installationStep' in app and 'buttons' in app['installationStep']:
         app_buttons = []
         for button in app['installationStep']['buttons']:
             button_text = _get_localized_value(button.get('buttonText'), language)
@@ -2270,7 +2290,12 @@ def get_connection_guide_keyboard(
 
     connect_link = create_deep_link(app, subscription_url)
 
-    if connect_link:
+    if is_android_tv:
+        connect_button = InlineKeyboardButton(
+            text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
+            callback_data='android_tv_connect',
+        )
+    elif connect_link:
         connect_button = InlineKeyboardButton(
             text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
             url=connect_link,
@@ -2361,10 +2386,11 @@ def get_specific_app_keyboard(
     from app.handlers.subscription import create_deep_link
 
     texts = get_texts(language)
+    is_android_tv = _is_android_tv_device(device_type)
 
     keyboard = []
 
-    if 'installationStep' in app and 'buttons' in app['installationStep']:
+    if not is_android_tv and 'installationStep' in app and 'buttons' in app['installationStep']:
         app_buttons = []
         for button in app['installationStep']['buttons']:
             button_text = _get_localized_value(button.get('buttonText'), language)
@@ -2391,7 +2417,12 @@ def get_specific_app_keyboard(
 
     connect_link = create_deep_link(app, subscription_url)
 
-    if connect_link:
+    if is_android_tv:
+        connect_button = InlineKeyboardButton(
+            text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
+            callback_data='android_tv_connect',
+        )
+    elif connect_link:
         connect_button = InlineKeyboardButton(
             text=texts.t('CONNECT_BUTTON', '🚀 Подключиться'),
             url=connect_link,
