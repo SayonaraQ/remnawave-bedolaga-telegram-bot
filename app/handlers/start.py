@@ -1762,6 +1762,46 @@ async def required_sub_channel_check(
 ):
     from app.utils.message_patch import _cache_logo_file_id, get_logo_media
 
+    async def _send_logo_or_text(
+        text: str,
+        reply_markup: types.InlineKeyboardMarkup | None = None,
+        *,
+        parse_mode: str | None = 'HTML',
+    ) -> None:
+        # Telegram caption limit for photos is much lower than message text limit.
+        # Fallback to plain text when caption is too long or photo send fails.
+        if settings.ENABLE_LOGO_MODE and text and len(text) <= 1000:
+            photo_kwargs: dict[str, object] = {
+                'chat_id': query.from_user.id,
+                'photo': get_logo_media(),
+                'caption': text,
+            }
+            if reply_markup is not None:
+                photo_kwargs['reply_markup'] = reply_markup
+            if parse_mode is not None:
+                photo_kwargs['parse_mode'] = parse_mode
+            try:
+                _result = await bot.send_photo(**photo_kwargs)
+                _cache_logo_file_id(_result)
+                return
+            except TelegramBadRequest as send_error:
+                logger.warning(
+                    'Не удалось отправить фото с caption в required_sub_channel_check (len=%s): %s. '
+                    'Отправляем обычный текст.',
+                    len(text),
+                    send_error,
+                )
+
+        message_kwargs: dict[str, object] = {
+            'chat_id': query.from_user.id,
+            'text': text,
+        }
+        if reply_markup is not None:
+            message_kwargs['reply_markup'] = reply_markup
+        if parse_mode is not None:
+            message_kwargs['parse_mode'] = parse_mode
+        await bot.send_message(**message_kwargs)
+
     language = DEFAULT_LANGUAGE
     texts = get_texts(language)
 
@@ -1931,22 +1971,11 @@ async def required_sub_channel_check(
                 custom_buttons=custom_buttons,
             )
 
-            if settings.ENABLE_LOGO_MODE:
-                _result = await bot.send_photo(
-                    chat_id=query.from_user.id,
-                    photo=get_logo_media(),
-                    caption=menu_text,
-                    reply_markup=keyboard,
-                    parse_mode='HTML',
-                )
-                _cache_logo_file_id(_result)
-            else:
-                await bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=menu_text,
-                    reply_markup=keyboard,
-                    parse_mode='HTML',
-                )
+            await _send_logo_or_text(
+                menu_text,
+                keyboard,
+                parse_mode='HTML',
+            )
             await _send_pinned_message(bot, db, user)
         else:
             from app.keyboards.inline import get_rules_keyboard
@@ -2023,22 +2052,11 @@ async def required_sub_channel_check(
                         custom_buttons=custom_buttons,
                     )
 
-                    if settings.ENABLE_LOGO_MODE:
-                        _result = await bot.send_photo(
-                            chat_id=query.from_user.id,
-                            photo=get_logo_media(),
-                            caption=menu_text,
-                            reply_markup=keyboard,
-                            parse_mode='HTML',
-                        )
-                        _cache_logo_file_id(_result)
-                    else:
-                        await bot.send_message(
-                            chat_id=query.from_user.id,
-                            text=menu_text,
-                            reply_markup=keyboard,
-                            parse_mode='HTML',
-                        )
+                    await _send_logo_or_text(
+                        menu_text,
+                        keyboard,
+                        parse_mode='HTML',
+                    )
                     await _send_pinned_message(bot, db, user)
                 else:
                     await bot.send_message(
@@ -2052,21 +2070,13 @@ async def required_sub_channel_check(
                     await state.set_state(RegistrationStates.waiting_for_referral_code)
             else:
                 rules_text = await get_rules(language)
-
-                if settings.ENABLE_LOGO_MODE:
-                    _result = await bot.send_photo(
-                        chat_id=query.from_user.id,
-                        photo=get_logo_media(),
-                        caption=rules_text,
-                        reply_markup=get_rules_keyboard(language),
-                    )
-                    _cache_logo_file_id(_result)
-                else:
-                    await bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=rules_text,
-                        reply_markup=get_rules_keyboard(language),
-                    )
+                # Для правил всегда используем текст, чтобы не упираться в лимит caption у фото.
+                await bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=rules_text,
+                    reply_markup=get_rules_keyboard(language),
+                    parse_mode=None,
+                )
                 await state.set_state(RegistrationStates.waiting_for_rules_accept)
 
     except TelegramBadRequest as e:
