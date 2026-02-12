@@ -2070,13 +2070,30 @@ async def required_sub_channel_check(
                     await state.set_state(RegistrationStates.waiting_for_referral_code)
             else:
                 rules_text = await get_rules(language)
-                # Для правил всегда используем текст, чтобы не упираться в лимит caption у фото.
-                await bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=rules_text,
-                    reply_markup=get_rules_keyboard(language),
-                    parse_mode=None,
-                )
+                # Для правил всегда используем текст (не caption у фото), чтобы не упираться в лимит.
+                try:
+                    await bot.send_message(
+                        chat_id=query.from_user.id,
+                        text=rules_text,
+                        reply_markup=get_rules_keyboard(language),
+                        parse_mode='HTML',
+                    )
+                except TelegramBadRequest as rules_error:
+                    # Если в правилах некорректная HTML-разметка, отправим без parse_mode.
+                    if 'parse entities' in str(rules_error).lower() or "can't parse" in str(rules_error).lower():
+                        logger.warning(
+                            'Ошибка HTML-разметки в тексте правил (required_sub_channel_check): %s. '
+                            'Повторная отправка без parse_mode.',
+                            rules_error,
+                        )
+                        await bot.send_message(
+                            chat_id=query.from_user.id,
+                            text=rules_text,
+                            reply_markup=get_rules_keyboard(language),
+                            parse_mode=None,
+                        )
+                    else:
+                        raise
                 await state.set_state(RegistrationStates.waiting_for_rules_accept)
 
     except TelegramBadRequest as e:
