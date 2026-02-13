@@ -1603,9 +1603,52 @@ async def handle_android_tv_qr_non_photo(message: types.Message, db_user: User):
     )
 
 
+def _parse_specific_app_callback_data(callback_data: str | None, language: str) -> tuple[str, str] | None:
+    if not callback_data or not callback_data.startswith('app_') or callback_data.startswith('app_list_'):
+        return None
+
+    payload = callback_data[4:]
+    if '_' not in payload:
+        return None
+
+    payload_parts = payload.split('_')
+    candidates: list[tuple[str, str]] = []
+
+    # Пробуем все возможные точки разделения device/app и валидируем по app-config.
+    for split_index in range(1, len(payload_parts)):
+        device_type = '_'.join(payload_parts[:split_index])
+        app_id = '_'.join(payload_parts[split_index:])
+        if not device_type or not app_id:
+            continue
+
+        apps = get_apps_for_device(device_type, language)
+        if any(isinstance(app, dict) and app.get('id') == app_id for app in apps):
+            candidates.append((device_type, app_id))
+
+    if candidates:
+        candidates.sort(key=lambda item: len(item[0]), reverse=True)
+        return candidates[0]
+
+    parts = callback_data.split('_', 2)
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return None
+
+    return parts[1], parts[2]
+
+
 async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    device_type = callback.data.split('_')[2]
     texts = get_texts(db_user.language)
+    callback_data = callback.data or ''
+    parts = callback_data.split('_', 2)
+    if len(parts) != 3 or parts[0] != 'app' or parts[1] != 'list' or not parts[2]:
+        logger.warning('Некорректный callback_data в выборе приложений: %s', callback_data)
+        await callback.answer(
+            texts.t('SUBSCRIPTION_DEVICE_APPS_NOT_FOUND', '❌ Приложения для этого устройства не найдены'),
+            show_alert=True,
+        )
+        return
+
+    device_type = parts[2]
 
     apps = get_apps_for_device(device_type, db_user.language)
 
@@ -1632,8 +1675,18 @@ async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db:
 
 
 async def handle_specific_app_guide(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    _, device_type, app_id = callback.data.split('_')
     texts = get_texts(db_user.language)
+    callback_data = callback.data or ''
+    parsed_callback = _parse_specific_app_callback_data(callback_data, db_user.language)
+    if not parsed_callback:
+        logger.warning('Некорректный callback_data для приложения: %s', callback_data)
+        await callback.answer(
+            texts.t('SUBSCRIPTION_APP_NOT_FOUND', '❌ Приложение не найдено'),
+            show_alert=True,
+        )
+        return
+
+    device_type, app_id = parsed_callback
     subscription = db_user.subscription
 
     subscription_link = get_display_subscription_link(subscription)
