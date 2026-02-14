@@ -89,7 +89,7 @@
         "installationStep": {
           "buttons": [
             {
-              "buttonLink": "https://github.com/coolcoala/koala-clash/releases",
+              "buttonLink": "https://github.com/coolcoala/clash-verge-rev-lite/releases/download/v0.2.10/Koala.Clash_x64-setup.exe",
               "buttonText": {
                 "en": "Download (GitHub Releases)",
                 "ru": "Скачать (GitHub Releases)"
