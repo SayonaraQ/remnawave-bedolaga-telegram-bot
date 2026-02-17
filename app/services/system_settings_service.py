@@ -882,6 +882,11 @@ class BotConfigurationService:
             'format': 'Булево значение.',
             'example': 'true',
         },
+        'WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS': {
+            'description': 'Админ-уведомления о событиях ноды: connection_lost / connection_restored.',
+            'format': 'Булево значение.',
+            'example': 'false',
+        },
     }
 
     @classmethod
