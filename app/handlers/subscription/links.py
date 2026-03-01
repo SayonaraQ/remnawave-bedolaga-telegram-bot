@@ -16,16 +16,7 @@ from app.utils.subscription_utils import (
     get_happ_cryptolink_redirect_link,
 )
 
-def _has_callback_button(message: types.Message, callback_data: str) -> bool:
-    rm = getattr(message, "reply_markup", None)
-    if not rm or not getattr(rm, "inline_keyboard", None):
-        return False
-
-    for row in rm.inline_keyboard:
-        for btn in row:
-            if getattr(btn, "callback_data", None) == callback_data:
-                return True
-    return False
+from .common import load_app_config_async, logger
 
 
 async def handle_connect_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -50,7 +41,6 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
         return
 
     connect_mode = settings.CONNECT_BUTTON_MODE
-
     back_cb = 'back_to_menu' if callback.data == 'subscription_connect_main' else 'menu_subscription'
 
     if connect_mode == 'miniapp_subscription':
@@ -157,6 +147,31 @@ async def handle_connect_subscription(callback: types.CallbackQuery, db_user: Us
             parse_mode='HTML',
         )
     else:
+        # Guide mode: show classic device menu, but verify config availability first.
+        config = None
+        try:
+            config = await load_app_config_async()
+        except Exception as e:
+            logger.warning('Failed to load guide config', error=e)
+
+        if not config:
+            await callback.message.edit_text(
+                texts.t(
+                    'GUIDE_CONFIG_NOT_SET',
+                    '⚠️ <b>Конфигурация не настроена</b>\n\n'
+                    'Администратор ещё не настроил конфигурацию приложений.\n'
+                    'Обратитесь к администратору.',
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
+                    ]
+                ),
+                parse_mode='HTML',
+            )
+            await callback.answer()
+            return
+
         if hide_subscription_link:
             device_text = texts.t(
                 'SUBSCRIPTION_CONNECT_DEVICE_MESSAGE_HIDDEN',

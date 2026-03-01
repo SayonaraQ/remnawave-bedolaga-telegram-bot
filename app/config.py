@@ -66,8 +66,6 @@ class Settings(BaseSettings):
     ADMIN_REPORTS_TOPIC_ID: int | None = None
     ADMIN_REPORTS_SEND_TIME: str | None = None
 
-    CHANNEL_SUB_ID: str | None = None
-    CHANNEL_LINK: str | None = None
     CHANNEL_IS_REQUIRED_SUB: bool = False
     CHANNEL_DISABLE_TRIAL_ON_UNSUBSCRIBE: bool = True
     CHANNEL_REQUIRED_FOR_ALL: bool = False
@@ -123,7 +121,6 @@ class Settings(BaseSettings):
     WEBHOOK_NOTIFY_NOT_CONNECTED: bool = True
     WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD: bool = True
     WEBHOOK_NOTIFY_DEVICES: bool = True
-    WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS: bool = False
 
     TRIAL_DURATION_DAYS: int = 3
     TRIAL_TRAFFIC_LIMIT_GB: int = 10
@@ -503,6 +500,11 @@ class Settings(BaseSettings):
     FREEKASSA_USE_API: bool = False
     # Публичный IP сервера для Freekassa API (если не задан - определяется автоматически)
     SERVER_PUBLIC_IP: str | None = None
+    # Раздельные методы оплаты Freekassa (отображаются как отдельные кнопки)
+    FREEKASSA_SBP_ENABLED: bool = False  # СБП (QR код) — i=44
+    FREEKASSA_SBP_DISPLAY_NAME: str = 'СБП (QR код)'
+    FREEKASSA_CARD_ENABLED: bool = False  # Карты РФ — i=36
+    FREEKASSA_CARD_DISPLAY_NAME: str = 'Карта РФ'
 
     # KassaAI (api.fk.life) - отдельная платёжка
     KASSA_AI_ENABLED: bool = False
@@ -1540,8 +1542,8 @@ class Settings(BaseSettings):
             logger.warning('Некорректное значение DEVICES_SELECTION_DISABLED_AMOUNT', raw_value=raw_value)
             return None
 
-        if value < 0:
-            return 0
+        if value <= 0:
+            return None
 
         return value
 
@@ -1764,6 +1766,26 @@ class Settings(BaseSettings):
 
     def get_freekassa_display_name_html(self) -> str:
         return html.escape(self.get_freekassa_display_name())
+
+    def is_freekassa_sbp_enabled(self) -> bool:
+        return self.FREEKASSA_SBP_ENABLED and self.is_freekassa_enabled()
+
+    def get_freekassa_sbp_display_name(self) -> str:
+        name = (self.FREEKASSA_SBP_DISPLAY_NAME or '').strip()
+        return name if name else 'СБП (QR код)'
+
+    def get_freekassa_sbp_display_name_html(self) -> str:
+        return html.escape(self.get_freekassa_sbp_display_name())
+
+    def is_freekassa_card_enabled(self) -> bool:
+        return self.FREEKASSA_CARD_ENABLED and self.is_freekassa_enabled()
+
+    def get_freekassa_card_display_name(self) -> str:
+        name = (self.FREEKASSA_CARD_DISPLAY_NAME or '').strip()
+        return name if name else 'Карта РФ'
+
+    def get_freekassa_card_display_name_html(self) -> str:
+        return html.escape(self.get_freekassa_card_display_name())
 
     def is_kassa_ai_enabled(self) -> bool:
         return (
