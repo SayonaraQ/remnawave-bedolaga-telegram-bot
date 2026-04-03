@@ -23,6 +23,10 @@ ARG VERSION="v3.41.0" # x-release-please-version
 ARG BUILD_DATE
 ARG VCS_REF
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libzbar0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
