@@ -1,5 +1,7 @@
 """Handler for KassaAI balance top-up."""
 
+import html
+
 import structlog
 from aiogram import types
 from aiogram.fsm.context import FSMContext
@@ -37,6 +39,11 @@ _KASSA_AI_METHOD_CONFIG = {
         'display_name': settings.get_kassa_ai_card_display_name,
         'unavailable_text': 'KassaAI Карта временно недоступна',
     },
+    'kassa_ai_sberpay': {
+        'is_enabled': settings.is_kassa_ai_sberpay_enabled,
+        'display_name': settings.get_kassa_ai_sberpay_display_name,
+        'unavailable_text': 'KassaAI SberPay временно недоступен',
+    },
 }
 
 
@@ -45,7 +52,7 @@ async def _check_topup_restriction(callback: types.CallbackQuery, db_user: User)
     if not getattr(db_user, 'restriction_topup', False):
         return False
     texts = get_texts(db_user.language)
-    reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
+    reason = html.escape(getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором')
     support_url = settings.get_support_contact_url()
     keyboard = []
     if support_url:
@@ -173,7 +180,7 @@ async def process_kassa_ai_payment_amount(
 
     # Проверка ограничения на пополнение
     if getattr(db_user, 'restriction_topup', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
+        reason = html.escape(getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором')
         support_url = settings.get_support_contact_url()
         keyboard = []
         if support_url:
@@ -348,3 +355,14 @@ async def start_kassa_ai_card_topup(
 ):
     """Start KassaAI Card top-up process."""
     await _start_kassa_ai_sub_topup(callback, db_user, db, state, 'kassa_ai_card')
+
+
+@error_handler
+async def start_kassa_ai_sberpay_topup(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+):
+    """Start KassaAI SberPay top-up process."""
+    await _start_kassa_ai_sub_topup(callback, db_user, db, state, 'kassa_ai_sberpay')

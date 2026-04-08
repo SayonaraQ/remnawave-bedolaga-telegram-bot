@@ -37,7 +37,6 @@ python-dateutil==2.9.0.post0
 pytz==2023.4
 cryptography>=44.0.1
 qrcode[pil]==8.0
-pyzbar==0.1.9
 
 # Личный кабинет (Cabinet)
 bcrypt==5.0.0

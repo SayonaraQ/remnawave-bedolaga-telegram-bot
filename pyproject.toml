@@ -1,6 +1,6 @@
 [project]
 name = 'remnawave-bedolaga-telegram-bot'
-version = "3.41.0"
+version = "3.45.2"
 description = 'Telegram bot for RemnaWave VPN service'
 readme = 'README.md'
 license = { text = 'MIT' }
@@ -18,7 +18,6 @@ dependencies = [
     'python-dateutil>=2.9.0.post0',
     'cryptography>=44.0.1',
     'qrcode[pil]>=8.0',
-    'pyzbar>=0.1.9',
     'packaging>=26.0',
     'bcrypt>=5.0.0',
     'pyjwt>=2.11.0',

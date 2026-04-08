@@ -19,13 +19,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.13-slim
 
-ARG VERSION="v3.41.0" # x-release-please-version
+ARG VERSION="v3.45.2" # x-release-please-version
 ARG BUILD_DATE
 ARG VCS_REF
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libzbar0 \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
@@ -37,7 +33,8 @@ WORKDIR /app
 
 COPY --chown=app:app . .
 
-RUN mkdir -p logs data && chown app:app logs data
+RUN mkdir -p logs data uploads/images uploads/videos uploads/thumbnails && \
+    chown -R app:app logs data uploads
 
 USER app
 
