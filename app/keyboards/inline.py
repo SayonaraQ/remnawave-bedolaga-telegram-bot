@@ -1063,7 +1063,11 @@ def get_insufficient_balance_keyboard(
 
 
 def get_subscription_keyboard(
-    language: str = DEFAULT_LANGUAGE, has_subscription: bool = False, is_trial: bool = False, subscription=None
+    language: str = DEFAULT_LANGUAGE,
+    has_subscription: bool = False,
+    is_trial: bool = False,
+    subscription=None,
+    balance_kopeks: int = 0,
 ) -> InlineKeyboardMarkup:
     from app.config import settings
 
@@ -1078,6 +1082,12 @@ def get_subscription_keyboard(
     )
 
     if has_subscription:
+        balance_button_text = texts.t(
+            'SUBSCRIPTION_BALANCE_BUTTON',
+            '💰 Баланс: {balance}',
+        ).format(balance=texts.format_price(max(0, int(balance_kopeks or 0))))
+        keyboard.append([build_miniapp_or_callback_button(text=balance_button_text, callback_data='menu_balance')])
+
         subscription_link = get_display_subscription_link(subscription) if subscription else None
         if subscription_link:
             connect_mode = settings.CONNECT_BUTTON_MODE
