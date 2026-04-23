@@ -1,4 +1,4 @@
-"""Mixin для интеграции с PayPear (paypear.ru)."""
+"""Mixin для интеграции с Overpay (pay.overpay.io)."""
 
 from __future__ import annotations
 
@@ -11,26 +11,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
-from app.services.paypear_service import paypear_service
+from app.services.overpay_service import overpay_service
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
 
 
-# Маппинг статусов PayPear -> internal
-PAYPEAR_STATUS_MAP: dict[str, tuple[str, bool]] = {
-    'NEW': ('pending', False),
-    'PROCESS': ('processing', False),
-    'CONFIRMED': ('success', True),
-    'CANCELED': ('canceled', False),
-    'REFUNDED': ('refunded', False),
-    'EXPIRED': ('expired', False),
+# Маппинг статусов Overpay -> internal
+OVERPAY_STATUS_MAP: dict[str, tuple[str, bool]] = {
+    'charged': ('success', True),
+    'authorized': ('authorized', False),
+    'preflight': ('pending', False),
+    'new': ('pending', False),
+    'processing': ('processing', False),
+    'prepared': ('processing', False),
+    'rejected': ('rejected', False),
+    'declined': ('declined', False),
+    'reversed': ('reversed', False),
+    'refunded': ('refunded', False),
+    'chargeback': ('chargeback', False),
+    'error': ('error', False),
 }
 
 
-class PayPearPaymentMixin:
-    """Mixin для работы с платежами PayPear."""
+class OverpayPaymentMixin:
+    """Mixin для работы с платежами Overpay."""
 
-    async def create_paypear_payment(
+    async def create_overpay_payment(
         self,
         db: AsyncSession,
         *,
@@ -42,29 +48,29 @@ class PayPearPaymentMixin:
         return_url: str | None = None,
     ) -> dict[str, Any] | None:
         """
-        Создает платеж PayPear.
+        Создает платеж Overpay.
 
         Returns:
             Словарь с данными платежа или None при ошибке
         """
-        if not settings.is_paypear_enabled():
-            logger.error('PayPear не настроен')
+        if not settings.is_overpay_enabled():
+            logger.error('Overpay не настроен')
             return None
 
         # Валидация лимитов
-        if amount_kopeks < settings.PAYPEAR_MIN_AMOUNT_KOPEKS:
+        if amount_kopeks < settings.OVERPAY_MIN_AMOUNT_KOPEKS:
             logger.warning(
-                'PayPear: сумма меньше минимальной',
+                'Overpay: сумма меньше минимальной',
                 amount_kopeks=amount_kopeks,
-                PAYPEAR_MIN_AMOUNT_KOPEKS=settings.PAYPEAR_MIN_AMOUNT_KOPEKS,
+                OVERPAY_MIN_AMOUNT_KOPEKS=settings.OVERPAY_MIN_AMOUNT_KOPEKS,
             )
             return None
 
-        if amount_kopeks > settings.PAYPEAR_MAX_AMOUNT_KOPEKS:
+        if amount_kopeks > settings.OVERPAY_MAX_AMOUNT_KOPEKS:
             logger.warning(
-                'PayPear: сумма больше максимальной',
+                'Overpay: сумма больше максимальной',
                 amount_kopeks=amount_kopeks,
-                PAYPEAR_MAX_AMOUNT_KOPEKS=settings.PAYPEAR_MAX_AMOUNT_KOPEKS,
+                OVERPAY_MAX_AMOUNT_KOPEKS=settings.OVERPAY_MAX_AMOUNT_KOPEKS,
             )
             return None
 
@@ -78,9 +84,10 @@ class PayPearPaymentMixin:
             tg_id = 'guest'
 
         # Генерируем уникальный order_id с telegram_id для удобного поиска
-        order_id = f'pp{tg_id}_{uuid.uuid4().hex[:6]}'
+        order_id = f'op{tg_id}_{uuid.uuid4().hex[:6]}'
         amount_rubles = amount_kopeks / 100
-        currency = settings.PAYPEAR_CURRENCY
+        amount_value = f'{amount_rubles:.2f}'
+        currency = settings.OVERPAY_CURRENCY
 
         # Метаданные
         metadata = {
@@ -91,53 +98,44 @@ class PayPearPaymentMixin:
             'type': 'balance_topup',
         }
 
+        # Методы оплаты из настроек
+        payment_methods_str = settings.OVERPAY_PAYMENT_METHODS
+        payment_methods = (
+            [m.strip() for m in payment_methods_str.split(',') if m.strip()] if payment_methods_str else None
+        )
+
         try:
-            payment_method_type = settings.PAYPEAR_PAYMENT_METHOD
-
             # Используем API для создания платежа
-            result = await paypear_service.create_payment(
-                order_id=order_id,
-                amount_rubles=amount_rubles,
+            result = await overpay_service.create_payment(
+                amount=amount_value,
                 currency=currency,
-                payment_method_type=payment_method_type,
+                lifetime_minutes=settings.OVERPAY_LIFETIME_MINUTES,
+                merchant_transaction_id=order_id,
                 description=description,
-                return_url=return_url or settings.PAYPEAR_RETURN_URL,
-                metadata=metadata,
+                return_url=return_url or settings.OVERPAY_RETURN_URL,
+                payment_methods=payment_methods,
             )
 
-            confirmation = result.get('confirmation', {})
-            payment_url = (
-                (confirmation.get('confirmation_url') or confirmation.get('url'))
-                if isinstance(confirmation, dict)
-                else None
-            )
-            paypear_id = result.get('id')
+            payment_url = result.get('resultUrl')
+            overpay_payment_id = str(result.get('id', '')) if result.get('id') else None
 
             if not payment_url:
-                logger.error('PayPear API не вернул confirmation_url', result=result)
+                logger.error('Overpay API не вернул URL платежа', result=result)
                 return None
 
-            # PayPear может добавить комиссию к сумме — сохраняем фактическую сумму
-            # для корректной проверки в webhook (amount включает комиссию)
-            api_amount = result.get('amount', {})
-            if isinstance(api_amount, dict) and api_amount.get('value') is not None:
-                charged_kopeks = round(float(api_amount['value']) * 100)
-                metadata['paypear_charged_kopeks'] = charged_kopeks
-
             logger.info(
-                'PayPear API: создан платеж',
+                'Overpay API: создан платеж',
                 order_id=order_id,
-                paypear_id=paypear_id,
+                overpay_payment_id=overpay_payment_id,
                 payment_url=payment_url,
-                charged_kopeks=metadata.get('paypear_charged_kopeks'),
             )
 
-            # Срок действия — 30 минут по умолчанию
-            expires_at = datetime.now(UTC) + timedelta(minutes=30)
+            # Срок действия
+            expires_at = datetime.now(UTC) + timedelta(minutes=settings.OVERPAY_LIFETIME_MINUTES)
 
             # Сохраняем в БД
-            paypear_crud = import_module('app.database.crud.paypear')
-            local_payment = await paypear_crud.create_paypear_payment(
+            overpay_crud = import_module('app.database.crud.overpay')
+            local_payment = await overpay_crud.create_overpay_payment(
                 db=db,
                 user_id=user_id,
                 order_id=order_id,
@@ -145,14 +143,13 @@ class PayPearPaymentMixin:
                 currency=currency,
                 description=description,
                 payment_url=payment_url,
-                payment_method=payment_method_type,
-                paypear_id=paypear_id,
+                overpay_payment_id=overpay_payment_id,
                 expires_at=expires_at,
                 metadata_json=metadata,
             )
 
             logger.info(
-                'PayPear: создан платеж',
+                'Overpay: создан платеж',
                 order_id=order_id,
                 user_id=user_id,
                 amount_rubles=amount_rubles,
@@ -161,7 +158,7 @@ class PayPearPaymentMixin:
 
             return {
                 'order_id': order_id,
-                'paypear_id': paypear_id,
+                'overpay_payment_id': overpay_payment_id,
                 'amount_kopeks': amount_kopeks,
                 'amount_rubles': amount_rubles,
                 'currency': currency,
@@ -171,116 +168,72 @@ class PayPearPaymentMixin:
             }
 
         except Exception as e:
-            logger.exception('PayPear: ошибка создания платежа', error=e)
+            logger.exception('Overpay: ошибка создания платежа', error=e)
             return None
 
-    async def process_paypear_webhook(
+    async def process_overpay_webhook(
         self,
         db: AsyncSession,
         payload: dict[str, Any],
     ) -> bool:
         """
-        Обрабатывает webhook от PayPear.
+        Обрабатывает webhook от Overpay.
 
-        Подпись проверяется в webserver/payments.py до вызова этого метода.
+        mTLS обеспечивает аутентификацию; дополнительно проверяем наличие платежа в БД.
 
         Args:
             db: Сессия БД
-            payload: JSON тело webhook (signature проверена в webserver)
+            payload: JSON тело webhook
 
         Returns:
             True если платеж успешно обработан
         """
         try:
-            event = payload.get('event')
-            obj = payload.get('object', {})
-            paypear_id = obj.get('id')
-            order_id = obj.get('order_id')
-            paypear_status = obj.get('status')
+            overpay_payment_id = str(payload.get('id', '')) if payload.get('id') else None
+            merchant_transaction_id = payload.get('merchantTransactionId')
+            overpay_status = payload.get('status')
 
-            if not paypear_id or not paypear_status:
-                logger.warning('PayPear webhook: отсутствуют обязательные поля', payload=payload)
+            if not overpay_payment_id or not overpay_status:
+                logger.warning('Overpay webhook: отсутствуют обязательные поля', payload=payload)
                 return False
 
-            # Определяем is_paid по event
-            is_confirmed = event == 'payment.confirmed'
-
-            # Ищем платеж по order_id (наш) или paypear_id
-            paypear_crud = import_module('app.database.crud.paypear')
+            # Ищем платеж по order_id (наш merchantTransactionId) или overpay_payment_id
+            overpay_crud = import_module('app.database.crud.overpay')
             payment = None
-            if order_id:
-                payment = await paypear_crud.get_paypear_payment_by_order_id(db, order_id)
-            if not payment and paypear_id:
-                payment = await paypear_crud.get_paypear_payment_by_paypear_id(db, paypear_id)
+            if merchant_transaction_id:
+                payment = await overpay_crud.get_overpay_payment_by_order_id(db, merchant_transaction_id)
+            if not payment and overpay_payment_id:
+                payment = await overpay_crud.get_overpay_payment_by_overpay_id(db, overpay_payment_id)
 
             if not payment:
                 logger.warning(
-                    'PayPear webhook: платеж не найден',
-                    order_id=order_id,
-                    paypear_id=paypear_id,
+                    'Overpay webhook: платеж не найден',
+                    merchant_transaction_id=merchant_transaction_id,
+                    overpay_payment_id=overpay_payment_id,
                 )
                 return False
 
             # Lock payment row immediately to prevent concurrent webhook processing (TOCTOU race)
-            locked = await paypear_crud.get_paypear_payment_by_id_for_update(db, payment.id)
+            locked = await overpay_crud.get_overpay_payment_by_id_for_update(db, payment.id)
             if not locked:
-                logger.error('PayPear: не удалось заблокировать платёж', payment_id=payment.id)
+                logger.error('Overpay: не удалось заблокировать платёж', payment_id=payment.id)
                 return False
             payment = locked
 
             # Проверка дублирования (re-check from locked row)
             if payment.is_paid:
-                logger.info('PayPear webhook: платеж уже обработан', order_id=payment.order_id)
+                logger.info('Overpay webhook: платеж уже обработан', order_id=payment.order_id)
                 return True
 
             # Маппинг статуса
-            status_info = PAYPEAR_STATUS_MAP.get(paypear_status, ('pending', False))
+            status_info = OVERPAY_STATUS_MAP.get(overpay_status, ('pending', False))
             internal_status, is_paid = status_info
 
-            # Если event = payment.confirmed, принудительно считаем оплаченным
-            if is_confirmed:
-                is_paid = True
-                internal_status = 'success'
-
             callback_payload = {
-                'paypear_id': paypear_id,
-                'order_id': order_id,
-                'status': paypear_status,
-                'event': event,
-                'amount': obj.get('amount'),
+                'overpay_payment_id': overpay_payment_id,
+                'merchant_transaction_id': merchant_transaction_id,
+                'status': overpay_status,
             }
-
-            # Проверка суммы ДО обновления статуса
-            # PayPear добавляет комиссию к amount — сравниваем с сохранённой суммой
-            # (paypear_charged_kopeks), а не с исходной суммой пополнения
-            if is_paid:
-                amount_info = obj.get('amount', {})
-                if isinstance(amount_info, dict):
-                    amount_value = amount_info.get('value')
-                else:
-                    amount_value = amount_info
-
-                if amount_value is not None:
-                    received_kopeks = round(float(amount_value) * 100)
-                    payment_metadata = dict(getattr(payment, 'metadata_json', {}) or {})
-                    expected_kopeks = payment_metadata.get('paypear_charged_kopeks', payment.amount_kopeks)
-                    if abs(received_kopeks - expected_kopeks) > 1:
-                        logger.error(
-                            'PayPear amount mismatch',
-                            expected_kopeks=expected_kopeks,
-                            received_kopeks=received_kopeks,
-                            original_amount_kopeks=payment.amount_kopeks,
-                            order_id=payment.order_id,
-                        )
-                        await paypear_crud.update_paypear_payment_status(
-                            db=db,
-                            payment=payment,
-                            status='amount_mismatch',
-                            is_paid=False,
-                            paypear_id=paypear_id,
-                            callback_payload=callback_payload,
-                        )
-                        return False
 
             # Финализируем платеж если оплачен — без промежуточного commit
             if is_paid:
@@ -288,34 +241,36 @@ class PayPearPaymentMixin:
                 payment.status = internal_status
                 payment.is_paid = True
                 payment.paid_at = datetime.now(UTC)
-                payment.paypear_id = paypear_id or payment.paypear_id
+                payment.overpay_payment_id = overpay_payment_id or payment.overpay_payment_id
                 payment.callback_payload = callback_payload
                 payment.updated_at = datetime.now(UTC)
                 await db.flush()
-                return await self._finalize_paypear_payment(db, payment, paypear_id=paypear_id, trigger='webhook')
+                return await self._finalize_overpay_payment(
+                    db, payment, overpay_payment_id=overpay_payment_id, trigger='webhook'
+                )
 
             # Для не-success статусов можно безопасно коммитить
-            payment = await paypear_crud.update_paypear_payment_status(
+            payment = await overpay_crud.update_overpay_payment_status(
                 db=db,
                 payment=payment,
                 status=internal_status,
                 is_paid=False,
-                paypear_id=paypear_id,
+                overpay_payment_id=overpay_payment_id,
                 callback_payload=callback_payload,
             )
 
             return True
 
         except Exception as e:
-            logger.exception('PayPear webhook: ошибка обработки', error=e)
+            logger.exception('Overpay webhook: ошибка обработки', error=e)
             return False
 
-    async def _finalize_paypear_payment(
+    async def _finalize_overpay_payment(
         self,
         db: AsyncSession,
         payment: Any,
         *,
-        paypear_id: str | None,
+        overpay_payment_id: str | None,
         trigger: str,
     ) -> bool:
         """Создаёт транзакцию, начисляет баланс и отправляет уведомления.
@@ -323,12 +278,12 @@ class PayPearPaymentMixin:
         FOR UPDATE lock must be acquired by the caller before invoking this method.
         """
         payment_module = import_module('app.services.payment_service')
-        paypear_crud = import_module('app.database.crud.paypear')
+        overpay_crud = import_module('app.database.crud.overpay')
 
         # FOR UPDATE lock already acquired by caller — just check idempotency
         if payment.transaction_id:
             logger.info(
-                'PayPear платеж уже связан с транзакцией',
+                'Overpay платеж уже связан с транзакцией',
                 order_id=payment.order_id,
                 transaction_id=payment.transaction_id,
                 trigger=trigger,
@@ -345,8 +300,8 @@ class PayPearPaymentMixin:
             db,
             metadata=metadata,
             payment_amount_kopeks=payment.amount_kopeks,
-            provider_payment_id=str(paypear_id) if paypear_id else payment.order_id,
-            provider_name='paypear',
+            provider_payment_id=str(overpay_payment_id) if overpay_payment_id else payment.order_id,
+            provider_name='overpay',
         )
         if guest_result is not None:
             return True
@@ -362,7 +317,7 @@ class PayPearPaymentMixin:
 
         user = await payment_module.get_user_by_id(db, payment.user_id)
         if not user:
-            logger.error('Пользователь не найден для PayPear', user_id=payment.user_id)
+            logger.error('Пользователь не найден для Overpay', user_id=payment.user_id)
             return False
 
         # Загружаем промогруппы в асинхронном контексте
@@ -374,7 +329,7 @@ class PayPearPaymentMixin:
         subscription = getattr(user, 'subscription', None)
         referrer_info = format_referrer_info(user)
 
-        transaction_external_id = str(paypear_id) if paypear_id else payment.order_id
+        transaction_external_id = str(overpay_payment_id) if overpay_payment_id else payment.order_id
 
         # Проверяем дупликат транзакции
         existing_transaction = None
@@ -382,10 +337,10 @@ class PayPearPaymentMixin:
             existing_transaction = await payment_module.get_transaction_by_external_id(
                 db,
                 transaction_external_id,
-                PaymentMethod.PAYPEAR,
+                PaymentMethod.OVERPAY,
             )
 
-        display_name = settings.get_paypear_display_name()
+        display_name = settings.get_overpay_display_name()
         description = f'Пополнение через {display_name}'
 
         transaction = existing_transaction
@@ -398,7 +353,7 @@ class PayPearPaymentMixin:
                 type=TransactionType.DEPOSIT,
                 amount_kopeks=payment.amount_kopeks,
                 description=description,
-                payment_method=PaymentMethod.PAYPEAR,
+                payment_method=PaymentMethod.OVERPAY,
                 external_id=transaction_external_id,
                 is_completed=True,
                 created_at=getattr(payment, 'created_at', None),
@@ -406,12 +361,12 @@ class PayPearPaymentMixin:
             )
             created_transaction = True
 
-        await paypear_crud.link_paypear_payment_to_transaction(db, payment=payment, transaction_id=transaction.id)
+        await overpay_crud.link_overpay_payment_to_transaction(db, payment=payment, transaction_id=transaction.id)
 
         should_credit_balance = created_transaction or not balance_already_credited
 
         if not should_credit_balance:
-            logger.info('PayPear платеж уже зачислил баланс ранее', order_id=payment.order_id)
+            logger.info('Overpay платеж уже зачислил баланс ранее', order_id=payment.order_id)
             return True
 
         # Lock user row to prevent concurrent balance race conditions
@@ -436,7 +391,7 @@ class PayPearPaymentMixin:
             amount_kopeks=payment.amount_kopeks,
             user_id=payment.user_id,
             type=TransactionType.DEPOSIT,
-            payment_method=PaymentMethod.PAYPEAR,
+            payment_method=PaymentMethod.OVERPAY,
             external_id=transaction_external_id,
         )
 
@@ -452,7 +407,7 @@ class PayPearPaymentMixin:
                 getattr(self, 'bot', None),
             )
         except Exception as error:
-            logger.error('Ошибка обработки реферального пополнения PayPear', error=error)
+            logger.error('Ошибка обработки реферального пополнения Overpay', error=error)
 
         if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
             user.has_made_first_topup = True
@@ -475,7 +430,7 @@ class PayPearPaymentMixin:
                     db=db,
                 )
             except Exception as error:
-                logger.error('Ошибка отправки админ уведомления PayPear', error=error)
+                logger.error('Ошибка отправки админ уведомления Overpay', error=error)
 
         if getattr(self, 'bot', None) and user.telegram_id:
             try:
@@ -493,7 +448,7 @@ class PayPearPaymentMixin:
                     reply_markup=keyboard,
                 )
             except Exception as error:
-                logger.error('Ошибка отправки уведомления пользователю PayPear', error=error)
+                logger.error('Ошибка отправки уведомления пользователю Overpay', error=error)
 
         try:
             from app.services.payment.common import send_cart_notification_after_topup
@@ -517,7 +472,7 @@ class PayPearPaymentMixin:
         await db.commit()
 
         logger.info(
-            'Обработан PayPear платеж',
+            'Обработан Overpay платеж',
             order_id=payment.order_id,
             user_id=payment.user_id,
             trigger=trigger,
@@ -525,17 +480,17 @@ class PayPearPaymentMixin:
 
         return True
 
-    async def check_paypear_payment_status(
+    async def check_overpay_payment_status(
         self,
         db: AsyncSession,
         order_id: str,
     ) -> dict[str, Any] | None:
         """Проверяет статус платежа через API."""
         try:
-            paypear_crud = import_module('app.database.crud.paypear')
-            payment = await paypear_crud.get_paypear_payment_by_order_id(db, order_id)
+            overpay_crud = import_module('app.database.crud.overpay')
+            payment = await overpay_crud.get_overpay_payment_by_order_id(db, order_id)
             if not payment:
-                logger.warning('PayPear payment not found', order_id=order_id)
+                logger.warning('Overpay payment not found', order_id=order_id)
                 return None
 
             if payment.is_paid:
@@ -545,66 +500,33 @@ class PayPearPaymentMixin:
                     'is_paid': True,
                 }
 
-            # Проверяем через API по paypear_id
-            if payment.paypear_id:
+            # Проверяем через API по overpay_payment_id
+            if payment.overpay_payment_id:
                 try:
-                    order_data = await paypear_service.get_payment(payment.paypear_id)
-                    paypear_status = order_data.get('status')
+                    order_data = await overpay_service.get_payment(payment.overpay_payment_id)
+                    overpay_status = order_data.get('status')
 
-                    if paypear_status:
-                        status_info = PAYPEAR_STATUS_MAP.get(paypear_status, ('pending', False))
+                    if overpay_status:
+                        status_info = OVERPAY_STATUS_MAP.get(overpay_status, ('pending', False))
                         internal_status, is_paid = status_info
 
                         if is_paid:
-                            # Проверка суммы — сравниваем с paypear_charged_kopeks
-                            # (amount включает комиссию PayPear)
-                            amount_info = order_data.get('amount', {})
-                            api_amount = amount_info.get('value') if isinstance(amount_info, dict) else amount_info
-                            if api_amount is not None:
-                                received_kopeks = round(float(api_amount) * 100)
-                                payment_metadata = dict(getattr(payment, 'metadata_json', {}) or {})
-                                expected_kopeks = payment_metadata.get('paypear_charged_kopeks', payment.amount_kopeks)
-                                if abs(received_kopeks - expected_kopeks) > 1:
-                                    logger.error(
-                                        'PayPear amount mismatch (API check)',
-                                        expected_kopeks=expected_kopeks,
-                                        received_kopeks=received_kopeks,
-                                        original_amount_kopeks=payment.amount_kopeks,
-                                        order_id=payment.order_id,
-                                    )
-                                    await paypear_crud.update_paypear_payment_status(
-                                        db=db,
-                                        payment=payment,
-                                        status='amount_mismatch',
-                                        is_paid=False,
-                                        paypear_id=payment.paypear_id,
-                                        callback_payload={
-                                            'check_source': 'api',
-                                            'paypear_order_data': order_data,
-                                        },
-                                    )
-                                    return {
-                                        'payment': payment,
-                                        'status': 'amount_mismatch',
-                                        'is_paid': False,
-                                    }
-
                             # Acquire FOR UPDATE lock before finalization
-                            locked = await paypear_crud.get_paypear_payment_by_id_for_update(db, payment.id)
+                            locked = await overpay_crud.get_overpay_payment_by_id_for_update(db, payment.id)
                             if not locked:
-                                logger.error('PayPear: не удалось заблокировать платёж', payment_id=payment.id)
+                                logger.error('Overpay: не удалось заблокировать платёж', payment_id=payment.id)
                                 return None
                             payment = locked
 
                             if payment.is_paid:
-                                logger.info('PayPear платеж уже обработан (api_check)', order_id=payment.order_id)
+                                logger.info('Overpay платеж уже обработан (api_check)', order_id=payment.order_id)
                                 return {
                                     'payment': payment,
                                     'status': 'success',
                                     'is_paid': True,
                                 }
 
-                            logger.info('PayPear payment confirmed via API', order_id=payment.order_id)
+                            logger.info('Overpay payment confirmed via API', order_id=payment.order_id)
 
                             # Inline field updates — NO intermediate commit that would release FOR UPDATE lock
                             payment.status = 'success'
@@ -612,27 +534,27 @@ class PayPearPaymentMixin:
                             payment.paid_at = datetime.now(UTC)
                             payment.callback_payload = {
                                 'check_source': 'api',
-                                'paypear_order_data': order_data,
+                                'overpay_order_data': order_data,
                             }
                             payment.updated_at = datetime.now(UTC)
                             await db.flush()
 
-                            await self._finalize_paypear_payment(
+                            await self._finalize_overpay_payment(
                                 db,
                                 payment,
-                                paypear_id=payment.paypear_id,
+                                overpay_payment_id=payment.overpay_payment_id,
                                 trigger='api_check',
                             )
                         elif internal_status != payment.status:
                             # Обновляем статус если изменился
-                            payment = await paypear_crud.update_paypear_payment_status(
+                            payment = await overpay_crud.update_overpay_payment_status(
                                 db=db,
                                 payment=payment,
                                 status=internal_status,
                             )
 
                 except Exception as e:
-                    logger.error('Error checking PayPear payment status via API', error=e)
+                    logger.error('Error checking Overpay payment status via API', error=e)
 
             return {
                 'payment': payment,
@@ -641,5 +563,5 @@ class PayPearPaymentMixin:
             }
 
         except Exception as e:
-            logger.exception('PayPear: ошибка проверки статуса', error=e)
+            logger.exception('Overpay: ошибка проверки статуса', error=e)
             return None
