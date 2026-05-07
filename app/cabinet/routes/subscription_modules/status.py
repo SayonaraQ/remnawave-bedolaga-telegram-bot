@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,11 +31,20 @@ from ...schemas.subscription import (
     SubscriptionStatusResponse,
 )
 from .helpers import _subscription_to_response, resolve_subscription
+from app.services.tv_quick_connect import (
+    TvQuickConnectSendError,
+    parse_tv_quick_connect_target,
+    send_tv_quick_connect_target,
+)
 
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+class TvQuickConnectRequest(BaseModel):
+    qr_data: str = Field(..., min_length=1, max_length=4096)
 
 
 @router.get('/info', response_model=SubscriptionStatusResponse)
@@ -212,6 +222,66 @@ async def get_happ_downloads(
     return {
         'platforms': available_platforms,
         'happ_enabled': bool(available_platforms),
+    }
+
+
+# ============ TV Quick Connect ============
+
+
+@router.post('/tv-quick-connect')
+async def tv_quick_connect(
+    payload: TvQuickConnectRequest,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+    subscription_id: int | None = Query(None, description='Subscription ID for multi-tariff'),
+) -> dict[str, Any]:
+    """Send user's subscription to a TV app using a scanned TV QR payload."""
+    subscription = await resolve_subscription(db, user, subscription_id)
+
+    if not subscription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No subscription found',
+        )
+
+    subscription_url = subscription.subscription_url
+    if not subscription_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Subscription link not yet generated',
+        )
+
+    target = parse_tv_quick_connect_target(payload.qr_data)
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Unsupported TV QR code',
+        )
+
+    try:
+        await send_tv_quick_connect_target(target, subscription_url)
+    except TvQuickConnectSendError as e:
+        logger.warning(
+            'TV quick connect failed',
+            user_id=user.id,
+            subscription_id=subscription.id,
+            provider=target.provider,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to send subscription to TV',
+        ) from e
+
+    logger.info(
+        'TV quick connect sent',
+        user_id=user.id,
+        subscription_id=subscription.id,
+        provider=target.provider,
+    )
+    return {
+        'status': 'sent',
+        'provider': target.provider,
     }
 
 
