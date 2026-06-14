@@ -8,12 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PERIOD_PRICES, settings
 from app.database.models import User
-from app.handlers.subscription.common import (
-    build_redirect_link,
-    create_deep_link,
-    get_localized_value,
-    resolve_button_url,
-)
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button
@@ -414,8 +408,14 @@ def _build_cabinet_main_menu_keyboard(
                 resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
             resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
 
+            # При наличии custom emoji стрипаем ведущий юникод-emoji из текста —
+            # иначе Telegram нарисует обе иконки.
+            from app.utils.miniapp_buttons import strip_leading_emoji
+
+            final_text = strip_leading_emoji(text) if resolved_emoji else text
+
             return InlineKeyboardButton(
-                text=text,
+                text=final_text,
                 web_app=types.WebAppInfo(url=url),
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
@@ -449,6 +449,10 @@ def _build_cabinet_main_menu_keyboard(
                 )
                 resolved_style = _resolve_style(custom_cfg.get('style'))
                 resolved_emoji = custom_cfg.get('icon_custom_emoji_id') or None
+                if resolved_emoji:
+                    from app.utils.miniapp_buttons import strip_leading_emoji
+
+                    custom_text = strip_leading_emoji(custom_text)
                 open_in = custom_cfg.get('open_in', 'external')
                 link_kwarg = (
                     {'web_app': types.WebAppInfo(url=custom_cfg['url'])}
@@ -523,10 +527,16 @@ def _build_cabinet_main_menu_keyboard(
                         continue
                     lang_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_LANGUAGE
                     resolved_lang_emoji = section_cfg.get('icon_custom_emoji_id') or None
+                    resolved_lang_style = _resolve_style(section_cfg.get('style'))
+                    if resolved_lang_emoji:
+                        from app.utils.miniapp_buttons import strip_leading_emoji
+
+                        lang_text = strip_leading_emoji(lang_text)
                     row_buttons.append(
                         InlineKeyboardButton(
                             text=lang_text,
                             callback_data='menu_language',
+                            style=resolved_lang_style,
                             icon_custom_emoji_id=resolved_lang_emoji,
                         )
                     )
@@ -534,7 +544,12 @@ def _build_cabinet_main_menu_keyboard(
                 case 'admin':
                     if not is_admin:
                         continue
-                    admin_row = [InlineKeyboardButton(text=texts.MENU_ADMIN, callback_data='admin_panel')]
+                    admin_callback_style = _resolve_style(section_cfg.get('style'))
+                    admin_row = [
+                        InlineKeyboardButton(
+                            text=texts.MENU_ADMIN, callback_data='admin_panel', style=admin_callback_style
+                        )
+                    ]
                     if section_cfg.get('enabled', True):
                         admin_web_text = section_cfg.get('labels', {}).get(language, '') or '🖥 Веб-Админка'
                         admin_row.append(_cabinet_button(admin_web_text, '/admin', 'admin_panel'))
@@ -2311,6 +2326,12 @@ def get_autopay_keyboard(language: str = DEFAULT_LANGUAGE, sub_id: int | None = 
                     text=texts.t('AUTOPAY_SET_DAYS_BUTTON', '⚙️ Настроить дни'), callback_data='autopay_set_days'
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AUTOPAY_SET_PERIOD_BUTTON', '📅 Период продления'),
+                    callback_data='autopay_set_period',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
         ]
     )
@@ -2386,6 +2407,31 @@ def get_autopay_days_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboar
         keyboard.append(
             [InlineKeyboardButton(text=f'{days} {_get_days_word(days)}', callback_data=f'autopay_days_{days}')]
         )
+
+    keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='subscription_autopay')])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_autopay_period_keyboard(
+    available_periods: list[int],
+    current_period: int | None,
+    language: str = DEFAULT_LANGUAGE,
+) -> InlineKeyboardMarkup:
+    """Period picker for autopay. `current_period=None` means "use default"."""
+    texts = get_texts(language)
+    keyboard = []
+
+    default_label = texts.t('AUTOPAY_PERIOD_DEFAULT_BUTTON', '⚙️ По умолчанию (самый дешёвый)')
+    if current_period is None:
+        default_label = f'✅ {default_label}'
+    keyboard.append([InlineKeyboardButton(text=default_label, callback_data='autopay_period_default')])
+
+    for days in sorted(available_periods):
+        label = f'{days} {_get_days_word(days)}'
+        if current_period == days:
+            label = f'✅ {label}'
+        keyboard.append([InlineKeyboardButton(text=label, callback_data=f'autopay_period_{days}')])
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='subscription_autopay')])
 
@@ -3119,15 +3165,29 @@ def get_devices_management_keyboard(
     keyboard = []
 
     for i, device in enumerate(devices):
-        platform = device.get('platform', 'Unknown')
-        device_model = device.get('deviceModel', 'Unknown')
-        device_info = f'{platform} - {device_model}'
+        # Локальный alias (если юзер задал) приоритетнее платформенной строки.
+        # `local_name` проставляется в attach_aliases_to_devices() ДО рендера.
+        local_name = (device.get('local_name') or '').strip()
+        if local_name:
+            device_info = local_name
+        else:
+            platform = device.get('platform', 'Unknown')
+            device_model = device.get('deviceModel', 'Unknown')
+            device_info = f'{platform} - {device_model}'
 
-        if len(device_info) > 25:
-            device_info = device_info[:22] + '...'
+        if len(device_info) > 22:
+            device_info = device_info[:19] + '...'
 
+        # Ряд: pencil-кнопка переименования (компактная иконка) + сброс
+        # устройства с его лейблом (исторический callback).
         keyboard.append(
-            [InlineKeyboardButton(text=f'🔄 {device_info}', callback_data=f'reset_device_{i}_{pagination.page}')]
+            [
+                InlineKeyboardButton(
+                    text=texts.t('DEVICE_RENAME_BUTTON', '✏️'),
+                    callback_data=f'device_rename_{i}_{pagination.page}',
+                ),
+                InlineKeyboardButton(text=f'🔄 {device_info}', callback_data=f'reset_device_{i}_{pagination.page}'),
+            ]
         )
 
     if pagination.total_pages > 1:
@@ -3570,3 +3630,19 @@ def get_admin_ticket_reply_cancel_keyboard(language: str = DEFAULT_LANGUAGE) -> 
             ]
         ]
     )
+
+
+# Late-bound imports — placed at the bottom to break the
+# `keyboards.inline` ↔ `handlers.subscription.__init__` ↔ `autopay.py`
+# circular import chain. `autopay.py` imports `_get_payment_method_display_name`
+# (and other helpers) from inline.py at its module top level; by deferring
+# this import until inline.py finishes loading, those symbols are guaranteed
+# to exist when subscription/__init__.py loads autopay.
+# Function bodies above reference these names; Python resolves module-level
+# globals at call time, not definition time, so the late binding works.
+from app.handlers.subscription.common import (
+    build_redirect_link,
+    create_deep_link,
+    get_localized_value,
+    resolve_button_url,
+)

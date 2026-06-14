@@ -1,3 +1,4 @@
+import hmac
 import secrets
 import string
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.database.constants import POSTGRES_INT4_MAX, POSTGRES_INT4_MIN
 from app.database.crud.discount_offer import get_latest_claimed_offer_for_user
 from app.database.crud.promo_group import get_default_promo_group
 from app.database.crud.promo_offer_log import log_promo_offer_action
@@ -86,6 +88,10 @@ def generate_referral_code() -> str:
 
 
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
+    # users.id is INTEGER (int4) in PostgreSQL; guard large telegram IDs passed by mistake.
+    if user_id < POSTGRES_INT4_MIN or user_id > POSTGRES_INT4_MAX:
+        return None
+
     result = await db.execute(
         select(User)
         .options(
@@ -518,6 +524,7 @@ async def add_user_balance(
                 amount_kopeks=amount_kopeks,
                 description=description,
                 payment_method=payment_method,
+                commit=commit,
             )
 
         if commit:
@@ -759,7 +766,7 @@ async def subtract_user_balance(
                         log_error=log_error,
                     )
 
-        logger.info('✅ Средства списаны: →', old_balance=old_balance, balance_kopeks=user.balance_kopeks)
+        logger.info('✅ Средства списаны', old_balance=old_balance, balance_kopeks=user.balance_kopeks)
         return True
 
     except Exception as e:
@@ -894,7 +901,15 @@ async def get_users_list(
         query = query.where(User.id.in_(sub_query))
 
     if promo_group_id:
-        query = query.where(User.promo_group_id == promo_group_id)
+        # Юзер считается членом группы если она в legacy `user.promo_group_id` ИЛИ
+        # в M2M `user_promo_groups`. Без OR-условия админский фильтр пропускал юзеров
+        # с группой только в M2M (см. analogue issue #422 для payment methods).
+        query = query.where(
+            or_(
+                User.promo_group_id == promo_group_id,
+                User.id.in_(select(UserPromoGroup.user_id).where(UserPromoGroup.promo_group_id == promo_group_id)),
+            )
+        )
 
     if campaign_id:
         query = query.where(
@@ -1022,7 +1037,15 @@ async def get_users_count(
         query = query.where(User.id.in_(sub_query))
 
     if promo_group_id:
-        query = query.where(User.promo_group_id == promo_group_id)
+        # Юзер считается членом группы если она в legacy `user.promo_group_id` ИЛИ
+        # в M2M `user_promo_groups`. Без OR-условия админский фильтр пропускал юзеров
+        # с группой только в M2M (см. analogue issue #422 для payment methods).
+        query = query.where(
+            or_(
+                User.promo_group_id == promo_group_id,
+                User.id.in_(select(UserPromoGroup.user_id).where(UserPromoGroup.promo_group_id == promo_group_id)),
+            )
+        )
 
     if campaign_id:
         query = query.where(
@@ -1460,7 +1483,7 @@ async def verify_and_apply_email_change(db: AsyncSession, user: User, code: str)
         await db.commit()
         return False, 'Verification code has expired'
 
-    if user.email_change_code != code:
+    if not hmac.compare_digest(str(user.email_change_code), str(code)):
         return False, 'Invalid verification code'
 
     # Check if new email is still available
@@ -1475,10 +1498,12 @@ async def verify_and_apply_email_change(db: AsyncSession, user: User, code: str)
     old_email = user.email
     new_email = user.email_change_new
 
-    # Apply the change
+    # Apply the change. Источник verify — cabinet OTP (юзер ввёл код, отправленный
+    # на новый email), это trusted для admin escalation.
     user.email = new_email
     user.email_verified = True
     user.email_verified_at = datetime.now(UTC)
+    user.email_verification_source = 'cabinet'
     user.email_change_new = None
     user.email_change_code = None
     user.email_change_expires = None
@@ -1576,11 +1601,18 @@ async def create_user_by_oauth(
     column_name = OAUTH_PROVIDER_COLUMNS.get(provider)
     provider_value: str | int = int(provider_id) if provider == 'vk' else provider_id
 
+    # email_verification_source — trust signal. Google/Discord trusted для admin
+    # escalation; VK/Yandex используются только для UX (recovery, linking), но
+    # match с ADMIN_EMAILS не сработает (см. TRUSTED_EMAIL_VERIFICATION_SOURCES).
+    verification_source = f'oauth_{provider}' if email_verified else None
+
     user = User(
         telegram_id=None,
         auth_type=provider,
         email=email,
         email_verified=email_verified,
+        email_verification_source=verification_source,
+        email_verified_at=datetime.now(UTC) if email_verified else None,
         password_hash=None,
         username=sanitize_telegram_name(username) if username else None,
         first_name=sanitize_telegram_name(first_name) if first_name else None,
@@ -1601,9 +1633,7 @@ async def create_user_by_oauth(
     await db.refresh(user)
 
     user.promo_group = default_group
-    logger.info(
-        'Created OAuth user via (provider_id=) with id', provider=provider, provider_id=provider_id, user_id=user.id
-    )
+    logger.info('Created OAuth user', provider=provider, provider_id=provider_id, user_id=user.id)
 
     try:
         from app.services.event_emitter import event_emitter

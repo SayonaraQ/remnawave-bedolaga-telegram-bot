@@ -1181,6 +1181,10 @@ async def create_payment_link(
         option = (payload.payment_option or '').strip().lower()
         if option not in {'card', 'sbp'}:
             option = 'sbp'
+        # Передаём выбранный пользователем способ (card/sbp) в Pal24 — иначе счёт
+        # всегда создаётся как SBP, а ниже provider_method ещё и используется в
+        # ответе. (Регрессия из 95a32e85: и определение, и проброс были удалены.)
+        provider_method = 'card' if option == 'card' else 'sbp'
         payment_service = PaymentService()
         result = await payment_service.create_pal24_payment(
             db=db,
@@ -1190,6 +1194,7 @@ async def create_payment_link(
                 amount_kopeks, telegram_user_id=user.telegram_id, user_db_id=user.id
             ),
             language=user.language or settings.DEFAULT_LANGUAGE,
+            payment_method=provider_method,
         )
         if not result:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail='Failed to create payment')
@@ -5770,7 +5775,9 @@ async def update_subscription_servers_endpoint(
             status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 'code': 'insufficient_funds',
-                'message': (f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing)}'),
+                'message': (
+                    f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing, round_kopeks=False)}'
+                ),
             },
         )
 
@@ -5959,7 +5966,9 @@ async def update_subscription_traffic_endpoint(
                 status.HTTP_402_PAYMENT_REQUIRED,
                 detail={
                     'code': 'insufficient_funds',
-                    'message': (f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing)}'),
+                    'message': (
+                        f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing, round_kopeks=False)}'
+                    ),
                 },
             )
 
@@ -6133,7 +6142,9 @@ async def update_subscription_devices_endpoint(
             status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 'code': 'insufficient_funds',
-                'message': (f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing)}'),
+                'message': (
+                    f'Недостаточно средств на балансе. Не хватает {settings.format_price(missing, round_kopeks=False)}'
+                ),
             },
         )
 
@@ -6574,7 +6585,7 @@ async def purchase_tariff_endpoint(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 'code': 'insufficient_funds',
-                'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
+                'message': f'Недостаточно средств. Не хватает {settings.format_price(missing, round_kopeks=False)}',
                 'missing_amount': missing,
             },
         )
@@ -6765,6 +6776,19 @@ async def preview_tariff_switch_endpoint(
             detail={'code': 'subscription_inactive', 'message': 'Subscription is not active'},
         )
 
+    if subscription.is_trial:
+        # A trial has no paid value to prorate from — "switching" it would hand the
+        # user a full paid period of the target tariff for the (often zero/cheap)
+        # upgrade cost (bug #629889 class). Trials must buy a real tariff instead.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_cannot_switch',
+                'message': 'Trial subscriptions cannot switch tariffs. Please purchase a tariff instead.',
+                'use_purchase_flow': True,
+            },
+        )
+
     current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
     new_tariff = await get_tariff_by_id(db, payload.tariff_id)
 
@@ -6816,10 +6840,13 @@ async def preview_tariff_switch_endpoint(
         upgrade_cost_kopeks=upgrade_cost,
         upgrade_cost_label=settings.format_price(upgrade_cost) if upgrade_cost > 0 else 'Бесплатно',
         balance_kopeks=balance,
-        balance_label=settings.format_price(balance),
+        # Когда показываем missing_amount_label с копейками (round_kopeks=False),
+        # balance_label тоже должен быть с копейками — иначе пары "Баланс 150 ₽,
+        # не хватает 0.40 ₽" выглядит противоречиво ("150 ₽ это > 150 ₽? зачем не хватает?").
+        balance_label=settings.format_price(balance, round_kopeks=False),
         has_enough_balance=has_enough,
         missing_amount_kopeks=missing,
-        missing_amount_label=settings.format_price(missing) if missing > 0 else '',
+        missing_amount_label=settings.format_price(missing, round_kopeks=False) if missing > 0 else '',
         is_upgrade=is_upgrade,
         message=None,
     )
@@ -6863,6 +6890,19 @@ async def switch_tariff_endpoint(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={'code': 'subscription_inactive', 'message': 'Subscription is not active'},
+        )
+
+    if subscription.is_trial:
+        # A trial has no paid value to prorate from — "switching" it would hand the
+        # user a full paid period of the target tariff for the (often zero/cheap)
+        # upgrade cost (bug #629889 class). Trials must buy a real tariff instead.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_cannot_switch',
+                'message': 'Trial subscriptions cannot switch tariffs. Please purchase a tariff instead.',
+                'use_purchase_flow': True,
+            },
         )
 
     current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
@@ -6919,7 +6959,7 @@ async def switch_tariff_endpoint(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail={
                     'code': 'insufficient_funds',
-                    'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
+                    'message': f'Недостаточно средств. Не хватает {settings.format_price(missing, round_kopeks=False)}',
                     'missing_amount': missing,
                 },
             )

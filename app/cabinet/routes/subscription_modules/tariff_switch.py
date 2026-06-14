@@ -67,6 +67,19 @@ async def preview_tariff_switch(
                 'use_purchase_flow': True,
             },
         )
+    if subscription.is_trial:
+        # A trial has no paid value to prorate from — "switching" it would hand the
+        # user a full paid period of the target tariff for the (often zero/cheap)
+        # upgrade cost (bug #629889 class). Trials must buy a real tariff via the
+        # purchase flow instead of switching.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_cannot_switch',
+                'message': 'Trial subscriptions cannot switch tariffs. Please purchase a tariff instead.',
+                'use_purchase_flow': True,
+            },
+        )
     if actual_status not in ('active', 'trial'):
         # For disabled/pending subscriptions, block switching with generic error
         raise HTTPException(
@@ -149,10 +162,12 @@ async def preview_tariff_switch(
         'upgrade_cost_kopeks': upgrade_cost,
         'upgrade_cost_label': settings.format_price(upgrade_cost) if upgrade_cost > 0 else 'Бесплатно',
         'balance_kopeks': balance,
-        'balance_label': settings.format_price(balance),
+        # Когда есть нехватка <1₽ (FX-rounding), показ копеек обязателен — без него
+        # юзер видит "Баланс 150 ₽, не хватает 0 ₽" и думает что баг.
+        'balance_label': settings.format_price(balance, round_kopeks=False),
         'has_enough_balance': has_enough,
         'missing_amount_kopeks': missing,
-        'missing_amount_label': settings.format_price(missing) if missing > 0 else '',
+        'missing_amount_label': settings.format_price(missing, round_kopeks=False) if missing > 0 else '',
         'is_upgrade': is_upgrade,
     }
 
@@ -216,6 +231,19 @@ async def switch_tariff(
             detail={
                 'code': 'subscription_expired',
                 'message': 'Subscription is expired. Please purchase a new tariff instead of switching.',
+                'use_purchase_flow': True,
+            },
+        )
+    if subscription.is_trial:
+        # A trial has no paid value to prorate from — "switching" it would hand the
+        # user a full paid period of the target tariff for the (often zero/cheap)
+        # upgrade cost (bug #629889 class). Trials must buy a real tariff via the
+        # purchase flow instead of switching.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_cannot_switch',
+                'message': 'Trial subscriptions cannot switch tariffs. Please purchase a tariff instead.',
                 'use_purchase_flow': True,
             },
         )
@@ -314,7 +342,7 @@ async def switch_tariff(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail={
                     'code': 'insufficient_funds',
-                    'message': f'Insufficient funds. Missing {settings.format_price(missing)}',
+                    'message': f'Insufficient funds. Missing {settings.format_price(missing, round_kopeks=False)}',
                     'missing_amount': missing,
                 },
             )
@@ -509,6 +537,26 @@ async def switch_tariff(
     # Refresh expired objects after db.commit() in _record_subscription_event
     await db.refresh(subscription)
     await db.refresh(user)
+
+    # Yandex.Metrika offline conversion. Tariff switch is a paid purchase event
+    # when upgrade_cost > 0 — without this call paid upgrades wouldn't appear in
+    # offline-conv reports even though the user paid. Skip on free downgrades.
+    # Sibling to #558449 (the broader yandex-conv fix missed this path).
+    if upgrade_cost > 0:
+        try:
+            from app.services import yandex_offline_conv_service as yandex_conv
+
+            await yandex_conv.store_cid_and_fire_purchase(
+                user.id,
+                request.yandex_cid,
+                upgrade_cost,
+            )
+        except Exception as yconv_err:
+            logger.debug(
+                'yandex_conv purchase hook failed (non-fatal)',
+                user_id=user.id,
+                error=str(yconv_err),
+            )
 
     response: dict[str, Any] = {
         'success': True,

@@ -69,6 +69,57 @@ from app.utils.user_utils import generate_unique_referral_code
 logger = structlog.get_logger(__name__)
 
 
+_SUBID_DELIMITER = '_subid_'
+
+
+def _split_start_param_subid(param: str | None) -> tuple[str | None, str | None]:
+    """Extract subid from ``{campaign}_subid_{subid}`` Telegram deeplink format.
+
+    Used to carry Keitaro/affiliate click IDs through /start where space is tight
+    (64 chars, no `?query=`). The campaign portion is returned to let normal
+    AdvertisingCampaign lookup proceed; the subid is stashed in FSM state to be
+    persisted post-registration via :data:`yandex_client_id.upsert_subid`.
+
+    Returns ``(param, None)`` when no delimiter, when either side is empty, or
+    when the subid would overflow the YandexClientIdMap.subid column (255).
+    """
+    if not param or _SUBID_DELIMITER not in param:
+        return param, None
+    head, _, tail = param.partition(_SUBID_DELIMITER)
+    if not head or not tail or len(tail) > 255:
+        return param, None
+    return head, tail
+
+
+async def _persist_pending_subid_after_registration(
+    db: AsyncSession,
+    state: FSMContext,
+    user,
+) -> None:
+    """Drain ``pending_subid`` from FSM state into ``yandex_client_id_map``.
+
+    Mirrors the lifecycle of ``pending_gift_token`` / ``pending_campaign``: the
+    subid is captured at /start (when no user row exists yet), held in state,
+    and committed once the user record is created.
+    """
+    data = await state.get_data() or {}
+    pending_subid = data.get('pending_subid')
+    if not pending_subid:
+        return
+    try:
+        from app.database.crud.yandex_client_id import upsert_subid
+
+        await upsert_subid(db, user.id, pending_subid, source='telegram')
+    except Exception as e:
+        logger.error(
+            'Failed to persist pending subid after registration',
+            user_id=getattr(user, 'id', None),
+            subid=pending_subid,
+            error=str(e),
+            exc_info=True,
+        )
+
+
 async def _activate_pending_gift_after_registration(
     db: AsyncSession,
     state: FSMContext,
@@ -376,6 +427,8 @@ async def _apply_campaign_bonus_if_needed(
     user,
     state_data: dict,
     texts,
+    *,
+    bot=None,
 ):
     campaign_id = state_data.get('campaign_id') if state_data else None
     if not campaign_id:
@@ -400,6 +453,39 @@ async def _apply_campaign_bonus_if_needed(
             await clear_pending_campaign(user.telegram_id)
     except Exception:
         pass
+
+    # Отправить админу уведомление о РЕГИСТРАЦИИ ровно один раз — когда запись в
+    # advertising_campaign_registrations реально создана (is_new_registration=True).
+    # При повторном вызове record_campaign_registration возвращает существующую
+    # запись с is_new_registration=False — тогда повторное уведомление не идёт,
+    # и количество сообщений в чате == количеству регистраций в кабинете.
+    if result.is_new_registration and bot is not None and getattr(user, 'telegram_id', None):
+        try:
+            notification_service = AdminNotificationService(bot)
+            await notification_service.send_campaign_registration_notification(
+                db,
+                telegram_user_id=user.telegram_id,
+                telegram_user_name=getattr(user, 'full_name', None)
+                or getattr(user, 'username', None)
+                or str(user.telegram_id),
+                telegram_username=getattr(user, 'username', None),
+                campaign=campaign,
+                user=user,
+                bonus_type=result.bonus_type or 'none',
+                balance_kopeks=result.balance_kopeks or 0,
+                subscription_days=result.subscription_days,
+                subscription_traffic_gb=result.subscription_traffic_gb,
+                subscription_device_limit=result.subscription_device_limit,
+                tariff_name=result.tariff_name,
+            )
+        except Exception as notify_error:
+            logger.error(
+                'Ошибка отправки админ уведомления о регистрации по кампании',
+                campaign_id=campaign.id,
+                user_id=getattr(user, 'id', None),
+                error=str(notify_error),
+                exc_info=True,
+            )
 
     if result.bonus_type == 'balance':
         amount_text = texts.format_price(result.balance_kopeks)
@@ -659,7 +745,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
             data['pending_start_payload'] = redis_payload
             state_needs_update = True
             logger.info(
-                "📦 START: Payload '' восстановлен из Redis (fallback)", pending_start_payload=pending_start_payload
+                '📦 START: Payload восстановлен из Redis (fallback)', pending_start_payload=pending_start_payload
             )
             # НЕ удаляем Redis payload здесь - удаление только после успешной регистрации
 
@@ -672,14 +758,18 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
         start_parameter = start_args[1]
     elif pending_start_payload:
         start_parameter = pending_start_payload
-        logger.info("📦 START: Используем сохраненный payload ''", pending_start_payload=pending_start_payload)
+        logger.info('📦 START: Используем сохраненный payload', pending_start_payload=pending_start_payload)
 
     if state_needs_update:
         await state.set_data(data)
 
-    # Handle gift code deep links: /start GIFT_{token}
-    if start_parameter and start_parameter.startswith('GIFT_'):
-        gift_token = start_parameter[5:]  # Strip "GIFT_" prefix
+    # Handle gift code deep links: /start GIFT_{token} (or giftclaim_{token} alias)
+    if start_parameter and (start_parameter.startswith('GIFT_') or start_parameter.startswith('giftclaim_')):
+        gift_token = (
+            start_parameter.removeprefix('giftclaim_')
+            if start_parameter.startswith('giftclaim_')
+            else start_parameter[5:]  # Strip "GIFT_" prefix
+        )
         if len(gift_token) >= 8:
             logger.info(
                 'Gift code deep link detected',
@@ -725,6 +815,33 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
             return
         start_parameter = None  # Invalid token, ignore
 
+    # Handle contests deep link: /start contests — the channel announcement's
+    # "🎲 Играть" button opens the bot here (a callback button can't open a
+    # private chat / show a personal menu from a channel post).
+    if start_parameter == 'contests':
+        user = db_user or await get_user_by_telegram_id(db, message.from_user.id)
+        if user and user.status != UserStatus.DELETED.value:
+            from app.handlers.contests import open_contests_menu_message
+
+            await open_contests_menu_message(message, user, db)
+            return
+        # Unregistered → fall through to normal /start (contests need a subscription anyway).
+        start_parameter = None
+
+    # Keitaro/affiliate click ID rides on /start as `{campaign}_subid_{click_id}`
+    # (64 chars total). Pull the click_id into FSM state and continue campaign
+    # lookup with the bare campaign portion.
+    if start_parameter:
+        campaign_part, subid_from_link = _split_start_param_subid(start_parameter)
+        if subid_from_link:
+            start_parameter = campaign_part
+            await state.update_data(pending_subid=subid_from_link)
+            logger.info(
+                'Captured subid from /start deeplink',
+                telegram_id=message.from_user.id,
+                campaign=campaign_part,
+            )
+
     if start_parameter:
         campaign = await get_campaign_by_start_parameter(
             db,
@@ -734,7 +851,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
 
         if campaign:
             logger.info(
-                '📣 Найдена рекламная кампания (start=)',
+                '📣 Найдена рекламная кампания',
                 campaign_id=campaign.id,
                 start_parameter=campaign.start_parameter,
             )
@@ -776,19 +893,58 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
 
     if referral_code:
         await state.update_data(referral_code=referral_code)
-        # Persist referral to Redis immediately so it survives if user opens miniapp/cabinet
-        # Only for new users — existing users don't need pending referral
-        if not db_user:
-            try:
-                referrer = await get_user_by_referral_code(db, referral_code)
-                if referrer and referrer.telegram_id != message.from_user.id:
+        try:
+            referrer = await get_user_by_referral_code(db, referral_code)
+        except Exception as exc:
+            logger.warning('Failed to resolve referral code at /start', referral_code=referral_code, error=exc)
+            referrer = None
+
+        if referrer and referrer.telegram_id != message.from_user.id:
+            if not db_user:
+                # New user — save to Redis so the cabinet/miniapp
+                # auth route can pick it up if the user opens the
+                # WebApp before completing the bot FSM.
+                try:
                     await save_pending_referral(message.from_user.id, referral_code, referrer.id)
-            except Exception as exc:
-                logger.warning('Failed to persist pending referral', referral_code=referral_code, error=exc)
+                except Exception as exc:
+                    logger.warning('Failed to persist pending referral', referral_code=referral_code, error=exc)
+            elif db_user.referred_by_id is None:
+                # RACE FIX: the miniapp may have created the user row
+                # between the /start link click and this handler firing
+                # (e.g. user tapped the WebApp menu button immediately
+                # after pressing the bot's Start button, and the
+                # cabinet's auth endpoint ran first). The Redis fallback
+                # the cabinet checks was not populated yet, so the user
+                # was created without a referrer. Attach it now —
+                # idempotent and self-referral-safe (see
+                # `attach_referrer_if_missing`).
+                from app.services.referral_service import attach_referrer_if_missing
+
+                try:
+                    await attach_referrer_if_missing(
+                        db,
+                        db_user,
+                        referral_code=referral_code,
+                        bot=message.bot,
+                        source='bot_start_retroactive',
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        'Failed to retroactively attach referrer at /start',
+                        referral_code=referral_code,
+                        user_id=db_user.id,
+                        error=exc,
+                    )
 
     user = db_user or await get_user_by_telegram_id(db, message.from_user.id)
 
-    if campaign and not campaign_notification_sent:
+    # Visit notification шлётся только для НОВОГО юзера (user is None) — это первый
+    # touch top-of-funnel. Для существующих юзеров (которые ещё не зарегистрированы
+    # в кампании) уведомление о ПЕРЕХОДЕ больше не идёт: вместо него админу прилетит
+    # отдельное «РЕГИСТРАЦИЯ ПО РК» позже, в _apply_campaign_bonus_if_needed, ровно
+    # при создании записи в advertising_campaign_registrations. Это даёт паритет
+    # между числом сообщений в чате и числом регистраций в кабинете.
+    if campaign and not campaign_notification_sent and user is None:
         try:
             notification_service = AdminNotificationService(message.bot)
             await notification_service.send_campaign_link_visit_notification(
@@ -879,6 +1035,8 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
         if user:
             await _activate_pending_gift_after_registration(db, state, user, message.answer)
             await state.update_data(pending_gift_token=None)
+            await _persist_pending_subid_after_registration(db, state, user)
+            await state.update_data(pending_subid=None)
             # Refresh user to pick up newly created subscriptions
             await db.refresh(user, attribute_names=['subscriptions'])
 
@@ -1046,7 +1204,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
         data['language'] = normalized_default
         await state.set_data(data)
         logger.info(
-            "🌐 LANGUAGE: выбор языка отключен, устанавливаем язык по умолчанию ''",
+            '🌐 LANGUAGE: выбор языка отключен, устанавливаем язык по умолчанию',
             normalized_default=normalized_default,
         )
 
@@ -1711,7 +1869,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
         except Exception as e:
             logger.error('Ошибка при обработке реферальной регистрации', error=e)
 
-    campaign_message = await _apply_campaign_bonus_if_needed(db, user, data, texts)
+    campaign_message = await _apply_campaign_bonus_if_needed(db, user, data, texts, bot=callback.bot)
 
     try:
         await db.refresh(user)
@@ -1740,6 +1898,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
 
     # Auto-activate pending gift for newly registered user (before state.clear() wipes the token)
     await _activate_pending_gift_after_registration(db, state, user, callback.message.answer)
+    await _persist_pending_subid_after_registration(db, state, user)
 
     await state.clear()
 
@@ -2059,7 +2218,7 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
         except Exception as e:
             logger.error('❌ Ошибка при активации промокода', promocode_to_activate=promocode_to_activate, error=e)
 
-    campaign_message = await _apply_campaign_bonus_if_needed(db, user, data, texts)
+    campaign_message = await _apply_campaign_bonus_if_needed(db, user, data, texts, bot=message.bot)
 
     try:
         await db.refresh(user)
@@ -2087,6 +2246,7 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
 
     # Auto-activate pending gift for newly registered user (before state.clear() wipes the token)
     await _activate_pending_gift_after_registration(db, state, user, message.answer)
+    await _persist_pending_subid_after_registration(db, state, user)
 
     await state.clear()
 
@@ -2385,12 +2545,12 @@ async def required_sub_channel_check(
                 pending_start_payload = redis_payload
                 state_data['pending_start_payload'] = redis_payload
                 logger.info(
-                    "📦 CHANNEL CHECK: Payload '' восстановлен из Redis (fallback)",
+                    '📦 CHANNEL CHECK: Payload восстановлен из Redis (fallback)',
                     pending_start_payload=pending_start_payload,
                 )
 
         if pending_start_payload:
-            logger.info("📦 CHANNEL CHECK: Найден сохраненный payload ''", pending_start_payload=pending_start_payload)
+            logger.info('📦 CHANNEL CHECK: Найден сохраненный payload', pending_start_payload=pending_start_payload)
 
         user = db_user
         if not user:
@@ -2675,7 +2835,7 @@ async def required_sub_channel_check(
                             logger.error('Ошибка при обработке реферальной регистрации', error=e)
 
                     # Применяем бонус рекламной кампании (record_campaign_registration)
-                    campaign_message = await _apply_campaign_bonus_if_needed(db, user, state_data, texts)
+                    campaign_message = await _apply_campaign_bonus_if_needed(db, user, state_data, texts, bot=bot)
                     try:
                         await db.refresh(user)
                     except Exception as refresh_error:

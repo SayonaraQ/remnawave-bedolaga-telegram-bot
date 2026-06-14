@@ -120,7 +120,7 @@ class SubscriptionService:
 
         if self._config_error:
             logger.warning(
-                'RemnaWave API недоступен: . Подписочный сервис будет работать в оффлайн-режиме.',
+                'RemnaWave API недоступен. Подписочный сервис будет работать в оффлайн-режиме.',
                 config_error=self._config_error,
             )
 
@@ -292,16 +292,18 @@ class SubscriptionService:
                     remnawave_uuid=subscription.remnawave_uuid,
                 )
 
-        # New subscription — create a NEW Remnawave user
-        base_username = settings.format_remnawave_username(
+        # New subscription — create a NEW Remnawave user.
+        # short_id (6 hex chars) приклеивается к base; helper гарантирует, что
+        # итоговая длина ≤ REMNAWAVE_USERNAME_MAX_LENGTH (исторический баг с
+        # `didykmarin_email_didykmarin_703_49883b` — 38 chars вместо 36).
+        username = settings.build_remnawave_subscription_username(
             full_name=user.full_name,
             username=user.username,
             telegram_id=user.telegram_id,
             email=user.email,
             user_id=user.id,
+            suffix=f'_{subscription.remnawave_short_id}',
         )
-        # Use permanent short_id from subscription (generated at creation time)
-        username = f'{base_username}_{subscription.remnawave_short_id}'
 
         updated_user = await api.create_user(username=username, **common_kwargs)
         if reset_traffic:
@@ -367,14 +369,12 @@ class SubscriptionService:
             common_kwargs['external_squad_uuid'] = ext_squad_uuid
 
         if existing_users:
-            logger.info(
-                '🔄 Найден существующий пользователь в панели для', _format_user_log=self._format_user_log(user)
-            )
+            logger.info('🔄 Найден существующий пользователь в панели', _format_user_log=self._format_user_log(user))
             remnawave_user = existing_users[0]
 
             try:
                 await api.reset_user_devices(remnawave_user.uuid)
-                logger.info('🔧 Сброшены HWID устройства для', _format_user_log=self._format_user_log(user))
+                logger.info('🔧 Сброшены HWID устройства', _format_user_log=self._format_user_log(user))
             except Exception as hwid_error:
                 logger.warning('⚠️ Не удалось сбросить HWID', hwid_error=hwid_error)
 
@@ -383,7 +383,7 @@ class SubscriptionService:
                 await self._reset_user_traffic(api, updated_user.uuid, user, reset_reason)
             return updated_user
 
-        logger.info('🆕 Создаем нового пользователя в панели для', _format_user_log=self._format_user_log(user))
+        logger.info('🆕 Создаем нового пользователя в панели', _format_user_log=self._format_user_log(user))
         username = settings.format_remnawave_username(
             full_name=user.full_name,
             username=user.username,
@@ -563,11 +563,11 @@ class SubscriptionService:
             await api.reset_user_traffic(user_uuid)
             reason_text = f' ({reset_reason})' if reset_reason else ''
             logger.info(
-                '🔄 Сброшен трафик RemnaWave для', _format_user_log=self._format_user_log(user), reason_text=reason_text
+                '🔄 Сброшен трафик RemnaWave', _format_user_log=self._format_user_log(user), reason_text=reason_text
             )
         except Exception as exc:
             logger.warning(
-                '⚠️ Не удалось сбросить трафик RemnaWave для', _format_user_log=self._format_user_log(user), error=exc
+                '⚠️ Не удалось сбросить трафик RemnaWave', _format_user_log=self._format_user_log(user), error=exc
             )
 
     async def disable_remnawave_user(self, user_uuid: str) -> bool:
@@ -667,7 +667,7 @@ class SubscriptionService:
                 subscription.subscription_crypto_link = updated_user.happ_crypto_link
                 await db.commit()
 
-                logger.info('✅ Обновлена ссылка подписки для', _format_user_log=self._format_user_log(user))
+                logger.info('✅ Обновлена ссылка подписки', _format_user_log=self._format_user_log(user))
                 return updated_user.subscription_url
 
         except Exception as e:
@@ -763,7 +763,7 @@ class SubscriptionService:
                 return True, None
 
             logger.info(
-                'Синхронизация подписки с RemnaWave (subscription_url=, remnawave_uuid=)',
+                'Синхронизация подписки с RemnaWave',
                 subscription_id=subscription.id,
                 subscription_url=bool(subscription.subscription_url),
                 remnawave_uuid=bool(sub_uuid),
@@ -863,7 +863,7 @@ class SubscriptionService:
                 needs_cleanup = True
 
             if needs_cleanup:
-                logger.info('🧹 Очищаем мусорные данные подписки для', user_log=user_log)
+                logger.info('🧹 Очищаем мусорные данные подписки', user_log=user_log)
 
                 subscription.remnawave_short_uuid = None
                 subscription.remnawave_uuid = None
@@ -874,12 +874,12 @@ class SubscriptionService:
                     user.remnawave_uuid = None
 
                 await db.commit()
-                logger.info('✅ Мусорные данные очищены для', user_log=user_log)
+                logger.info('✅ Мусорные данные очищены', user_log=user_log)
 
             return True
 
         except Exception as e:
-            logger.error('❌ Ошибка валидации подписки для', _format_user_log=self._format_user_log(user), error=e)
+            logger.error('❌ Ошибка валидации подписки', _format_user_log=self._format_user_log(user), error=e)
             await db.rollback()
             return False
 
