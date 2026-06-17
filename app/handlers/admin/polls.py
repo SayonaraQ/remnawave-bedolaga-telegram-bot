@@ -13,6 +13,7 @@ from app.database.crud.poll import (
     create_poll,
     delete_poll,
     get_poll_by_id,
+    get_poll_responses_with_answers,
     get_poll_statistics,
     list_polls,
 )
@@ -28,6 +29,7 @@ from app.keyboards.admin import get_admin_communications_submenu_keyboard
 from app.localization.texts import get_texts
 from app.services.poll_service import send_poll_to_users
 from app.utils.decorators import admin_required, error_handler
+from app.utils.poll_export import build_poll_responses_csv
 from app.utils.validators import get_html_help_text, validate_html_tags
 
 
@@ -308,6 +310,12 @@ def _build_poll_details_keyboard(poll_id: int, language: str) -> types.InlineKey
                 types.InlineKeyboardButton(
                     text=texts.t('ADMIN_POLLS_STATS', '📊 Статистика'),
                     callback_data=f'poll_stats:{poll_id}',
+                )
+            ],
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_POLLS_EXPORT', '📋 Экспорт ответов (CSV)'),
+                    callback_data=f'poll_export:{poll_id}',
                 )
             ],
             [
@@ -1119,6 +1127,48 @@ async def show_poll_stats(
 
 @admin_required
 @error_handler
+async def export_poll_responses(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+):
+    poll_id = int(callback.data.split(':')[1])
+    poll = await get_poll_by_id(db, poll_id)
+    if not poll:
+        await callback.answer('❌ Опрос не найден', show_alert=True)
+        return
+
+    texts = get_texts(db_user.language)
+
+    # Тянем все ответы разом (limit заведомо больше реального числа приглашённых).
+    responses, _total = await get_poll_responses_with_answers(db, poll_id, limit=1_000_000, offset=0)
+    completed = [response for response in responses if response.completed_at is not None]
+
+    if not completed:
+        await callback.answer(
+            texts.t('ADMIN_POLLS_EXPORT_EMPTY', 'Нет завершённых ответов для экспорта'),
+            show_alert=True,
+        )
+        return
+
+    csv_text = build_poll_responses_csv(poll, responses)
+    # BOM, чтобы Excel корректно открыл UTF-8 (кириллица).
+    file_bytes = ('\ufeff' + csv_text).encode('utf-8')
+    filename = f'poll_{poll_id}_responses.csv'
+
+    await callback.message.answer_document(
+        document=types.BufferedInputFile(file_bytes, filename=filename),
+        caption=texts.t(
+            'ADMIN_POLLS_EXPORT_CAPTION',
+            '📋 Ответы на опрос «{title}»\nЗавершили: {count}',
+        ).format(title=html.escape(poll.title), count=len(completed)),
+        parse_mode='HTML',
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
 async def confirm_poll_delete(
     callback: types.CallbackQuery,
     db_user: User,
@@ -1190,6 +1240,7 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(select_custom_poll_target, F.data.startswith('poll_custom_target:'))
     dp.callback_query.register(confirm_poll_send, F.data.startswith('poll_send_confirm:'))
     dp.callback_query.register(show_poll_stats, F.data.startswith('poll_stats:'))
+    dp.callback_query.register(export_poll_responses, F.data.startswith('poll_export:'))
     dp.callback_query.register(confirm_poll_delete, F.data.startswith('poll_delete:'))
     dp.callback_query.register(delete_poll_handler, F.data.startswith('poll_delete_confirm:'))
 
