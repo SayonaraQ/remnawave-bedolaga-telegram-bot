@@ -2269,5 +2269,11 @@
   "GIFT_COPY_TEXT_HINT": "Натисніть на текст нижче — він скопіюється повністю. Надішліть його отримувачу.",
   "GIFT_COPY_TEXT_BODY": "🎁 Дарую тобі підписку {tariff_name} на {period_days} дн.\n\nАктивувати: {claim_link}\n\nЯкщо посилання не відкривається, введи код у боті: {public_code}",
   "GIFT_ITEM_NOT_CLAIMABLE": "Цей подарунок уже активовано — ділитися нічим.",
-  "GIFT_MY_BACK_TO_CARD": "◀️ До подарунка"
+  "GIFT_MY_BACK_TO_CARD": "◀️ До подарунка",
+  "ADMIN_POLLS_EXPORT": "📋 Експорт відповідей (CSV)",
+  "ADMIN_POLLS_EXPORT_EMPTY": "Немає завершених відповідей для експорту",
+  "ADMIN_POLLS_EXPORT_CAPTION": "📋 Відповіді на опитування «{title}»\nЗавершили: {count}",
+  "SUBSCRIPTION_BALANCE_BUTTON": "💰 Баланс: {balance}",
+  "SUBSCRIPTION_CONNECT_BUTTON": "🚀 Підключитися",
+  "TOPUP_BALANCE_WITH_AMOUNT_BUTTON": "💳 Поповнити баланс: (поточний: {balance})"
 }

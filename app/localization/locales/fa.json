@@ -2269,5 +2269,11 @@
   "GIFT_COPY_TEXT_HINT": "روی متن زیر بزنید تا کامل کپی شود، سپس آن را برای گیرنده بفرستید.",
   "GIFT_COPY_TEXT_BODY": "🎁 یک اشتراک {tariff_name} به مدت {period_days} روز به تو هدیه می‌دهم.\n\nفعال‌سازی: {claim_link}\n\nاگر لینک باز نشد، این کد را در ربات وارد کن: {public_code}",
   "GIFT_ITEM_NOT_CLAIMABLE": "این هدیه قبلاً فعال شده است — چیزی برای اشتراک‌گذاری نیست.",
-  "GIFT_MY_BACK_TO_CARD": "◀️ بازگشت به هدیه"
+  "GIFT_MY_BACK_TO_CARD": "◀️ بازگشت به هدیه",
+  "ADMIN_POLLS_EXPORT": "📋 خروجی پاسخ‌ها (CSV)",
+  "ADMIN_POLLS_EXPORT_EMPTY": "پاسخ تکمیل‌شده‌ای برای خروجی وجود ندارد",
+  "ADMIN_POLLS_EXPORT_CAPTION": "📋 پاسخ‌های نظرسنجی «{title}»\nتکمیل‌شده: {count}",
+  "SUBSCRIPTION_CONNECT_BUTTON": "🚀 اتصال",
+  "SUBSCRIPTION_BALANCE_BUTTON": "💰 موجودی: {balance}",
+  "TOPUP_BALANCE_WITH_AMOUNT_BUTTON": "💳 افزایش موجودی: (فعلی: {balance})"
 }

@@ -2269,5 +2269,11 @@
   "GIFT_COPY_TEXT_HINT": "点击下方文本即可整段复制，然后发送给接收者。",
   "GIFT_COPY_TEXT_BODY": "🎁 送你一份 {tariff_name} 订阅，为期 {period_days} 天。\n\n激活：{claim_link}\n\n如果链接打不开，请在机器人中输入代码：{public_code}",
   "GIFT_ITEM_NOT_CLAIMABLE": "该礼物已被激活——没有可分享的内容。",
-  "GIFT_MY_BACK_TO_CARD": "◀️ 返回礼物"
+  "GIFT_MY_BACK_TO_CARD": "◀️ 返回礼物",
+  "ADMIN_POLLS_EXPORT": "📋 导出回答 (CSV)",
+  "ADMIN_POLLS_EXPORT_EMPTY": "没有可导出的已完成回答",
+  "ADMIN_POLLS_EXPORT_CAPTION": "📋 问卷《{title}》的回答\n已完成：{count}",
+  "SUBSCRIPTION_CONNECT_BUTTON": "🚀 连接",
+  "SUBSCRIPTION_BALANCE_BUTTON": "💰 余额：{balance}",
+  "TOPUP_BALANCE_WITH_AMOUNT_BUTTON": "💳 充值余额：（当前：{balance}）"
 }

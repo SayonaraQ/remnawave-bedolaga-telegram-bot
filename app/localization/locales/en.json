@@ -2272,5 +2272,8 @@
   "GIFT_COPY_TEXT_HINT": "Tap the text below to copy all of it, then send it to the recipient.",
   "GIFT_COPY_TEXT_BODY": "🎁 I'm giving you a {tariff_name} subscription for {period_days} days.\n\nActivate: {claim_link}\n\nIf the link does not open, enter this code in the bot: {public_code}",
   "GIFT_ITEM_NOT_CLAIMABLE": "This gift has already been activated — there is nothing to share.",
-  "GIFT_MY_BACK_TO_CARD": "◀️ Back to gift"
+  "GIFT_MY_BACK_TO_CARD": "◀️ Back to gift",
+  "ADMIN_POLLS_EXPORT": "📋 Export responses (CSV)",
+  "ADMIN_POLLS_EXPORT_EMPTY": "No completed responses to export",
+  "ADMIN_POLLS_EXPORT_CAPTION": "📋 Responses to poll “{title}”\nCompleted: {count}"
 }

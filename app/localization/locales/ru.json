@@ -2272,5 +2272,8 @@
   "GIFT_COPY_TEXT_HINT": "Нажмите на текст ниже — он скопируется целиком. Отправьте его получателю.",
   "GIFT_COPY_TEXT_BODY": "🎁 Дарю тебе подписку {tariff_name} на {period_days} дн.\n\nАктивировать: {claim_link}\n\nЕсли ссылка не открывается, введи код в боте: {public_code}",
   "GIFT_ITEM_NOT_CLAIMABLE": "Этот подарок уже активирован — делиться нечем.",
-  "GIFT_MY_BACK_TO_CARD": "◀️ К подарку"
+  "GIFT_MY_BACK_TO_CARD": "◀️ К подарку",
+  "ADMIN_POLLS_EXPORT": "📋 Экспорт ответов (CSV)",
+  "ADMIN_POLLS_EXPORT_EMPTY": "Нет завершённых ответов для экспорта",
+  "ADMIN_POLLS_EXPORT_CAPTION": "📋 Ответы на опрос «{title}»\nЗавершили: {count}"
 }
