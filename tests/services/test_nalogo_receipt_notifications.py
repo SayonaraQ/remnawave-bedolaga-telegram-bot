@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+)
 
 import app.services.nalogo_service as _nalogo_module
 from app.config import settings
@@ -307,16 +312,50 @@ async def test_blocked_user_is_not_retried_as_message(monkeypatch):
     bot.send_message.assert_not_awaited()
 
 
+class _FakeStreamContent:
+    """Эмулирует aiohttp StreamReader посегментно (портировано из #3096).
+
+    Ключевое: read(n) с положительным n отдаёт лишь то, что «уже накопилось в
+    буфере» — не больше одной сетевой порции за вызов, а не всё тело до n байт.
+    Именно на этой семантике ловится регресс: код, вызывающий read(n) в расчёте
+    «прочитает всё до лимита», получает обрезанный файл. Фейк, отдающий тело
+    целиком одним вызовом, баг замаскировал бы (и маскировал до #3094/#3096).
+    """
+
+    def __init__(self, body: bytes, network_chunk_size: int = 8192):
+        self._body = body
+        self._network_chunk_size = network_chunk_size
+        self._pos = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            # как настоящий StreamReader с n < 0 — дочитываем поток до конца
+            chunk = self._body[self._pos :]
+        else:
+            chunk = self._body[self._pos : self._pos + min(n, self._network_chunk_size)]
+        self._pos += len(chunk)
+        return chunk
+
+    async def iter_chunked(self, requested_size: int):
+        # настоящий iter_chunked(n) — это ровно AsyncStreamIterator(read(n))
+        while chunk := await self.read(requested_size):
+            yield chunk
+
+
 class _FakeResponse:
-    def __init__(self, *, status=200, content_type='image/jpeg', body=b'jpeg-bytes', content_length=None, chunks=None):
+    def __init__(
+        self,
+        *,
+        status=200,
+        content_type='image/jpeg',
+        body=b'jpeg-bytes',
+        content_length=None,
+        network_chunk_size=8192,
+    ):
         self.status = status
         self.headers = {'Content-Type': content_type}
         self.content_length = content_length if content_length is not None else len(body)
-        # Честная семантика StreamReader.read(n): отдаёт тело кусками («до n
-        # байт» за вызов), в конце — b'' (EOF). Одиночный read(n) в проде
-        # возвращал первый кусок и обрезал JPEG — фейк обязан это ловить.
-        pieces = list(chunks) if chunks is not None else [body]
-        self.content = SimpleNamespace(read=AsyncMock(side_effect=[*pieces, b'', b'']))
+        self.content = _FakeStreamContent(body, network_chunk_size=network_chunk_size)
 
     async def __aenter__(self):
         return self
@@ -361,18 +400,25 @@ async def test_download_accepts_image_and_pdf(monkeypatch):
     assert await _REAL_DOWNLOAD('https://x/print') == (b'%PDF', 'application/pdf')
 
 
-async def test_download_reads_multi_chunk_body_to_the_end(monkeypatch):
-    """Тело приходит несколькими кусками — файл обязан склеиться целиком.
+async def test_download_reads_full_body_not_just_first_network_chunk(monkeypatch):
+    """Тело длиннее одной сетевой порции обязано склеиться целиком.
 
-    Регрессия: одиночный resp.content.read(n) отдаёт «до n байт» (первый
-    буфер), чек уезжал клиенту обрезанным JPEG без хвоста.
+    Регрессия (#3094, #3096): resp.content.read(n) отдаёт только накопившийся
+    буфер — первую сетевую порцию, а не всё тело до n байт. Чек уезжал клиенту
+    физически обрезанным: валидный JPEG-заголовок, пустой/серый низ картинки.
+    Тело здесь заведомо больше network_chunk_size и неоднородно, поэтому
+    сравнение целиком ловит и обрыв, и перестановку, и потерю куска.
     """
-    _patch_aiohttp(
-        monkeypatch,
-        _FakeResponse(content_type='image/jpeg', chunks=[b'head-', b'middle-', b'tail'], content_length=0),
-    )
+    body = b'\xff\xd8' + bytes(range(256)) * 200 + b'\xff\xd9'  # ~51 КБ, 7 сетевых порций
+    _patch_aiohttp(monkeypatch, _FakeResponse(content_type='image/jpeg', body=body, network_chunk_size=8192))
 
-    assert await _REAL_DOWNLOAD('https://x/print') == (b'head-middle-tail', 'image/jpeg')
+    result = await _REAL_DOWNLOAD('https://x/print')
+
+    assert result is not None
+    data, content_type = result
+    assert content_type == 'image/jpeg'
+    assert data == body, f'ожидали {len(body)} байт, получили {len(data)} — печатная форма чека обрезана'
+    assert data.endswith(b'\xff\xd9'), 'файл должен заканчиваться JPEG-маркером EOI, а не обрывом на первом чанке'
 
 
 async def test_download_rejects_oversized_receipt(monkeypatch):
@@ -460,6 +506,38 @@ async def test_blocked_bot_falls_back_to_email_from_db(monkeypatch):
     assert send_mock.call_args.args[4] is None
 
 
+async def test_telegram_rejected_file_falls_back_to_email_with_attachment(monkeypatch):
+    """Telegram отверг файл — ссылка в чате не считается доставкой чека.
+
+    Регрессия: _deliver молча деградировал до сообщения со ссылкой, флаг
+    «доставлено в Telegram» всё равно выставлялся, и email-фоллбек не
+    срабатывал. Клиент под VPN оставался с неоткрывающейся ссылкой lknpd,
+    хотя целый файл чека лежал у нас на руках.
+    """
+    monkeypatch.setattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None, raising=False)
+    monkeypatch.setattr(
+        'app.services.nalogo_service._download_receipt_file',
+        AsyncMock(return_value=(b'jpeg-bytes', 'image/jpeg')),
+    )
+    send_mock = _patch_email(monkeypatch)
+    bot = _bot()
+    bot.send_photo = AsyncMock(side_effect=TelegramBadRequest(method=MagicMock(), message='PHOTO_INVALID_DIMENSIONS'))
+
+    await send_nalogo_receipt_notifications(
+        bot=bot,
+        nalogo_service=_nalogo(),
+        receipt_uuid='uuid-1',
+        amount_kopeks=10000,
+        telegram_user_id=111,
+        user_email='buyer@example.com',
+    )
+
+    # ссылка в Telegram ушла, но сам файл — нет, поэтому догоняем письмом с вложением
+    assert bot.send_message.await_count == 1
+    send_mock.assert_called_once()
+    assert send_mock.call_args.args[4] == [('receipt_uuid-1.jpg', b'jpeg-bytes', 'image/jpeg')]
+
+
 async def test_delivered_to_telegram_skips_email(monkeypatch):
     """Чек дошёл в Telegram — письмо не дублируем."""
     monkeypatch.setattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None, raising=False)
@@ -498,3 +576,40 @@ async def test_email_not_sent_when_smtp_unconfigured(monkeypatch):
 
     send_mock.assert_not_called()
     assert bot.send_message.await_count == 1  # админ-топик
+
+
+@pytest.mark.parametrize(
+    'error',
+    [
+        TelegramNotFound(method=MagicMock(), message='chat not found'),
+        TelegramRetryAfter(method=MagicMock(), message='Too Many Requests', retry_after=30),
+    ],
+    ids=['chat_not_found', 'flood_control'],
+)
+async def test_routine_delivery_failures_are_warnings_not_errors(monkeypatch, error):
+    """«Чат не найден» и флуд-контроль — штатные исходы рассылки, не сбои кода.
+
+    Обе ошибки не входили в список транзиентных, поэтому рутинные ситуации
+    (пользователь не нажимал Start; 429 от Telegram) логировались как ERROR
+    с трейсбеком и зашумляли алерты.
+    """
+    monkeypatch.setattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None, raising=False)
+    _patch_user_lookup(monkeypatch, None)
+    _patch_email(monkeypatch, configured=False)
+    log = MagicMock()
+    monkeypatch.setattr(_nalogo_module, 'logger', log)
+    bot = _bot()
+    bot.send_message = AsyncMock(side_effect=error)
+
+    await send_nalogo_receipt_notifications(
+        bot=bot,
+        nalogo_service=_nalogo(),
+        receipt_uuid='uuid-1',
+        amount_kopeks=10000,
+        telegram_user_id=111,
+    )
+
+    warned = [c for c in log.warning.call_args_list if 'транзиент' in c.args[0]]
+    assert warned, f'{type(error).__name__} должен логироваться как транзиент'
+    assert warned[0].kwargs['error_type'] == type(error).__name__
+    assert not [c for c in log.error.call_args_list if 'Ошибка отправки чека' in c.args[0]]
