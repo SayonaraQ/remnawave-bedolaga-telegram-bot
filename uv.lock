@@ -1269,7 +1269,7 @@ wheels = [
 
 [[package]]
 name = "remnawave-bedolaga-telegram-bot"
-version = "4.13.0"
+version = "4.14.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -1302,6 +1302,7 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
     { name = "uvicorn" },
+    { name = "websockets" },
     { name = "yookassa" },
 ]
 
@@ -1345,6 +1346,7 @@ requires-dist = [
     { name = "starlette", specifier = "==1.6.0" },
     { name = "structlog", specifier = "==26.1.0" },
     { name = "uvicorn", specifier = "==0.52.4" },
+    { name = "websockets", specifier = "==17.1" },
     { name = "yookassa", specifier = "==3.12.1" },
 ]
 

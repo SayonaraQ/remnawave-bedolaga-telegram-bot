@@ -435,8 +435,8 @@
   Классы: нет
   Функции: `get_available_countries` — Get available countries/servers for the user., `update_countries` — Update subscription countries/servers.
 - `app/cabinet/routes/subscription_modules/status.py` — Python-модуль
-  Классы: нет
-  Функции: `get_subscription` — Get current user's subscription details., `get_connection_link` — Get subscription connection link and instructions., `get_happ_downloads` — Get hApp download links for different platforms., `get_app_config` — Get app configuration for connection with deep links.
+  Классы: `TvQuickConnectRequest`
+  Функции: `get_subscription` — Get current user's subscription details., `get_connection_link` — Get subscription connection link and instructions., `get_happ_downloads` — Get hApp download links for different platforms., `tv_quick_connect` — Send user's subscription to a TV app using a scanned TV QR payload., `get_app_config` — Get app configuration for connection with deep links.
 - `app/cabinet/routes/subscription_modules/tariff_switch.py` — Python-модуль
   Классы: нет
   Функции: `preview_tariff_switch` — Preview tariff switch - shows cost calculation., `switch_tariff` — Switch to a different tariff without changing end date.
@@ -913,7 +913,7 @@
   Функции: `handle_gift_activate` — Handle gift_activate:{purchase_id} callback from Telegram notification., `register_handlers`
 - `app/handlers/menu.py` — Python-модуль
   Классы: нет
-  Функции: `show_main_menu`, `handle_profile_unavailable`, `show_service_rules`, `show_info_menu`, `show_promo_groups_info`, `show_faq_pages`, `show_faq_page`, `show_privacy_policy`, `show_public_offer`, `show_info_page`, `show_language_menu`, `process_language_change`, `handle_back_to_menu`, `get_main_menu_text`, `handle_activate_button` — Умная кнопка активации — система сама решает что делать:, `register_handlers`
+  Функции: `show_main_menu`, `show_bonuses_menu`, `handle_profile_unavailable`, `show_service_rules`, `show_info_menu`, `show_promo_groups_info`, `show_faq_pages`, `show_faq_page`, `show_privacy_policy`, `show_public_offer`, `show_info_page`, `show_language_menu`, `process_language_change`, `handle_back_to_menu`, `get_main_menu_text`, `handle_activate_button` — Умная кнопка активации — система сама решает что делать:, `register_handlers`
 - `app/handlers/polls.py` — Python-модуль
   Классы: нет
   Функции: `handle_poll_start`, `handle_poll_answer`, `register_handlers`
@@ -1007,7 +1007,7 @@
   Функции: `show_payments_overview`, `show_payment_details`, `manual_check_payment`, `check_all_payments` — Массовая проверка всех ожидающих платежей., `export_payments` — Экспорт данных платежей в JSON файл., `register_handlers`
 - `app/handlers/admin/polls.py` — Python-модуль
   Классы: `PollCreationStates`
-  Функции: `show_polls_panel`, `start_poll_creation`, `process_poll_title`, `process_poll_description`, `process_poll_reward`, `process_poll_question`, `show_poll_details`, `start_poll_send`, `show_custom_target_menu`, `select_poll_target`, `select_custom_poll_target`, `confirm_poll_send`, `show_poll_stats`, `confirm_poll_delete`, `delete_poll_handler`, `register_handlers`
+  Функции: `show_polls_panel`, `start_poll_creation`, `process_poll_title`, `process_poll_description`, `process_poll_reward`, `process_poll_question`, `show_poll_details`, `start_poll_send`, `show_custom_target_menu`, `select_poll_target`, `select_custom_poll_target`, `confirm_poll_send`, `show_poll_stats`, `export_poll_responses`, `confirm_poll_delete`, `delete_poll_handler`, `register_handlers`
 - `app/handlers/admin/pricing.py` — Python-модуль
   Классы: `ChoiceOption` (1 методов), `SettingEntry` (2 методов)
   Функции: `show_pricing_menu`, `show_pricing_section`, `start_price_edit`, `start_setting_edit`, `process_pricing_input`, `toggle_setting`, `select_setting_choice`, `toggle_traffic_package`, `toggle_period_option`, `register_handlers`
@@ -1774,6 +1774,9 @@
 - `app/services/tribute_service.py` — Python-модуль
   Классы: `TributeService` (14 методов)
   Функции: нет
+- `app/services/tv_quick_connect.py` — Python-модуль
+  Классы: `TvQuickConnectTarget`, `TvQuickConnectSendError`
+  Функции: `parse_tv_quick_connect_target` — Parse QR payload from supported TV apps., `send_tv_quick_connect_target`, `send_happ_tv_subscription`, `send_v2raytun_streamvault_subscription`
 - `app/services/user_action_log_service.py` — Python-модуль
   Классы: нет
   Функции: `bind_request_path` — Запомнить путь текущего запроса на время его обработки., `reset_request_path`, `current_request_path`, `normalize_cabinet_path` — Сворачивает числовые сегменты пути в {id} для группировки однотипных действий., `normalize_screen_path` — Путь экрана без секретов: числа → {id}, токены → {token}, хвостовой слэш срезан., `mark_user_seen` — Подвинуть ``last_activity``, если она старше интервала. Возвращает, изменилось ли., `should_log_cabinet_action`, `should_log_miniapp_action`, `schedule_cabinet_action_log` — Fire-and-forget запись действия юзера в кабинете — не задерживает запрос., `schedule_screen_view_log` — Fire-and-forget запись открытия экрана; повтор в окне дедупликации — не пишется., `schedule_click_log` — Fire-and-forget запись нажатия: подпись кнопки + экран, где нажали., `schedule_miniapp_action_log` — Fire-and-forget запись шага юзера в Mini App: действие — как действие, чтение — как экран., `remember_task` — Держать фоновую задачу сильной ссылкой до завершения., `drain_pending_actions` — Дождаться фоновых записей (нужно тестам и корректному завершению).
@@ -2158,6 +2161,9 @@
 - `app/utils/photo_message.py` — Python-модуль
   Классы: нет
   Функции: `safe_edit_or_resend` — Безопасно отредактировать текст сообщения или отправить новое при ошибке., `edit_or_answer_photo`
+- `app/utils/poll_export.py` — Python-модуль
+  Классы: нет
+  Функции: `build_poll_responses_csv` — Вернуть CSV с одной строкой на КАЖДЫЙ завершённый ответ.
 - `app/utils/price_display.py` — Python-модуль
   Классы: `PriceInfo` (2 методов)
   Функции: `calculate_user_price` — Calculate final price for a user with all applicable discounts., `format_price_button` — Format a price button text with unified discount display., `format_price_text` — Format a price for message text (not button) with unified discount display.
@@ -3390,6 +3396,9 @@
 - `tests/cabinet/test_traffic_packages_discount.py` — Python-модуль
   Классы: нет
   Функции: `classic_mode` — Drive ``get_traffic_packages`` down the classic (non-tariff) branch., `test_traffic_packages_expose_promo_group_discount` — A 20% traffic promo-group discount surfaces on every package., `test_traffic_packages_no_discount_when_group_has_none` — No promo discount → no discount fields, raw price unchanged., `test_traffic_packages_respect_apply_discounts_to_addons_flag` — When the promo group opts out of addon discounts, traffic stays full price., `test_traffic_packages_apply_discount_in_tariff_mode` — Tariff-mode packages go through the same discount path as classic mode., `test_traffic_packages_floor_displayed_price_at_one_ruble` — An extreme discount never displays below 1₽ — matching POST's max(100,...) floor., `test_traffic_packages_default_group_uses_prorated_period_hint` — Default group period-based traffic discount uses the same ceil(remaining days)
+- `tests/cabinet/test_tv_quick_connect.py` — Python-модуль
+  Классы: нет
+  Функции: `test_parse_happ_tv_code_direct`, `test_parse_happ_tv_code_from_url`, `test_parse_v2raytun_streamvault_key_direct`, `test_parse_v2raytun_streamvault_key_from_json`, `test_parse_v2raytun_streamvault_key_from_url`, `test_parse_unsupported_qr`
 - `tests/cabinet/test_unlink_forgets_provider_email.py` — Python-модуль
   Классы: нет
   Функции: `test_unlink_forgets_the_email_that_only_this_provider_attested`, `test_unlink_keeps_the_email_once_a_password_made_it_a_login`, `test_unlink_keeps_an_email_verified_elsewhere`, `test_unlinking_another_provider_leaves_the_email_alone`
@@ -4769,6 +4778,9 @@
 - `tests/utils/test_panel_node_usage.py` — Python-модуль
   Классы: нет
   Функции: `test_normalizes_the_production_shape` — ЕДИНСТВЕННАЯ форма, которая реально сюда приходит: {userId, nodeUuid, total}., `test_also_tolerates_the_raw_3_0_0_keys` — Сырые ключи панели {id, totalBytes} — запас на случай, если сюда однажды, `test_accepts_the_already_normalised_shape`, `test_falls_back_to_the_requested_node_uuid`, `test_skips_non_dict_entries_and_tolerates_missing_fields`, `test_non_numeric_totals_do_not_raise`, `test_empty_input`
+- `tests/utils/test_poll_export.py` — Python-модуль
+  Классы: нет
+  Функции: `test_csv_header_and_maps_answers_to_question_columns`, `test_incomplete_responses_are_skipped_and_missing_username_is_blank`
 - `tests/utils/test_pricing_utils.py` — Python-модуль
   Классы: `TestCalculatePricePerMonth` (4 методов), `TestBuildDynamicValues` (2 методов)
   Функции: нет

@@ -15,6 +15,7 @@ dependencies = [
     'fastapi[standard]==0.141.1',
     'redis==8.1.0',
     'pyyaml==6.0.3',
+    'websockets==17.1',
     'yookassa==3.12.1',
     'python-dateutil==2.9.0.post0',
     'cryptography==50.0.1',
