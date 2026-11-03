@@ -366,3 +366,18 @@ async def test_reset_is_noticed_even_if_the_bot_never_synced_usage(policy):
     await service.reconcile()
 
     assert store.only_session().completion_reason is GraceCompletionReason.PAID
+
+
+@pytest.mark.asyncio
+async def test_admin_moving_the_end_to_a_few_minutes_away_is_followed_not_a_conflict():
+    """Прод 03.11: конец через 9 минут не переезжал (порог выдачи 10 минут) и уходил в конфликт."""
+    _, service, store, panel, billing_gateway, clock = await started()
+    soon = NOW + timedelta(minutes=5)
+    billing_gateway.state = synced(limited_billing(end_at=soon), store)
+
+    await service.reconcile()
+
+    session = store.only_session()
+    assert session.state is GraceSessionState.ACTIVE
+    assert session.overlay.expire_at == soon - STRIP_OVERLAY_DATE_OFFSET
+    assert panel.applied_billing == []

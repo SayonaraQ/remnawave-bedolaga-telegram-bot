@@ -1215,7 +1215,7 @@ def strip_session_follows_billing(session: GraceAccessSession, current: GraceBil
     """В биллинге поменялась только дата — оверлей «без белых списков» переезжает за ней.
 
     Эхо даты оверлея не считается: иначе каждый проход сдвигал бы дату ещё на
-    минуту. Новая дата слишком близко — пусть сессия кончается штатно.
+    минуту. Дата оверлея на новой дате должна быть ещё впереди.
     """
     if not session.overlay.strip_squads or current.end_at is None:
         return False
@@ -1223,7 +1223,9 @@ def strip_session_follows_billing(session: GraceAccessSession, current: GraceBil
         return False
     if _datetimes_equal(current.end_at, session.billing_before.end_at):
         return False
-    if _as_utc(current.end_at) - STRIP_OVERLAY_DATE_OFFSET - _as_utc(now) < STRIP_MIN_REMAINING:
+    # Порог STRIP_MIN_REMAINING — только для выдачи. Переехать можно на любую будущую
+    # дату: близкий конец сессия встретит штатным таймаутом, а не конфликтом.
+    if _as_utc(current.end_at) - STRIP_OVERLAY_DATE_OFFSET <= _as_utc(now):
         return False
     return _strip_incident_holds(current) and _strip_billing_matches(session, current, ignore_end=True)
 
