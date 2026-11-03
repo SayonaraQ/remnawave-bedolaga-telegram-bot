@@ -190,3 +190,45 @@ async def test_overlay_date_during_grace_is_not_a_failed_renewal(monkeypatch, pa
     await svc._handle_user_modified(AsyncMock(), SimpleNamespace(id=1, telegram_id=1001), sub, data)
 
     assert enqueue.called is enqueued
+
+
+async def _close_strip_session(maker, completion: str, *, strip: bool = True) -> None:
+    from sqlalchemy import update
+
+    from app.database.models import GraceAccessSessionModel
+
+    await _open(maker, strip=strip)
+    async with maker() as db:
+        await db.execute(
+            update(GraceAccessSessionModel).values(
+                state='completed', completion_reason=completion, completed_at=datetime.now(UTC)
+            )
+        )
+        await db.execute(
+            update(Subscription)
+            .where(Subscription.id == 42)
+            .values(status='limited', end_date=datetime.now(UTC) - timedelta(minutes=1), grace_session_open=False)
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('completion', 'strip', 'expired'),
+    [('timeout', True, True), ('paid', True, False), ('conflict', True, False), ('timeout', False, False)],
+)
+async def test_strip_timeout_at_the_end_expires_the_subscription(db_maker, completion, strip, expired):
+    """Прод 03.11: после таймаута режима подписка оставалась limited с прошедшей датой —
+    мониторинг гасит только active, вебхук user.expired погашен как эхо оверлея, — и
+    обычный grace по истечению не выдавался до ночной синхронизации."""
+    from app.services import grace_access_runtime as rt
+
+    await _close_strip_session(db_maker, completion, strip=strip)
+    async with db_maker() as db:
+        changed = await rt._expire_after_strip_timeout(db, 42)
+        await db.commit()
+    async with db_maker() as db:
+        sub = await db.get(Subscription, 42)
+    assert changed is expired
+    assert (sub.status == 'expired') is expired
+    assert (sub.grace_candidate_reason == 'expired') is expired

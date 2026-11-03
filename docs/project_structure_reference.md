@@ -5015,7 +5015,7 @@
   Функции: `test_grant_tells_the_user_about_whitelist_only_with_reset_date`, `test_grant_without_a_monthly_reset_names_no_date`, `test_reset_ending_tells_the_user_whitelist_is_back`, `test_purchase_ending_is_silent` — О докупке человек уже получил «трафик добавлен»., `test_subscription_end_goes_to_admins_only`, `test_conflict_goes_to_admins`, `test_next_monthly_reset_is_the_first_of_next_local_month`, `test_emails_for_users_without_telegram`, `test_limited_webhook_message_is_skipped_only_for_strip_grace`
 - `tests/services/test_grace_strip_renewal_guards.py` — Python-модуль
   Классы: нет
-  Функции: `db_maker`, `test_renewed_strip_session_holds_the_canonical_write`, `test_classic_grace_and_no_grace_do_not_hold`, `test_overlay_date_during_grace_is_not_a_failed_renewal`
+  Функции: `db_maker`, `test_renewed_strip_session_holds_the_canonical_write`, `test_classic_grace_and_no_grace_do_not_hold`, `test_overlay_date_during_grace_is_not_a_failed_renewal`, `test_strip_timeout_at_the_end_expires_the_subscription` — Прод 03.11: после таймаута режима подписка оставалась limited с прошедшей датой —
 - `tests/services/test_guest_notification_switch.py` — Python-модуль
   Классы: нет
   Функции: `test_disabled_main_email_does_not_silence_credentials`, `test_enabled_main_email_sends_both`

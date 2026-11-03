@@ -54,6 +54,7 @@ from app.services.grace_access_service import (
     GraceAccessService,
     GraceAccessSession,
     GraceBillingState,
+    GraceCompletionReason,
     GraceLimitedStrategy,
     GracePanelOverlay,
     GracePanelSnapshot,
@@ -1192,6 +1193,8 @@ class GraceAccessRuntime:
                 result = (
                     await core.drain(limit=1, force_restore=force_restore) if drain else await core.reconcile(limit=1)
                 )
+                if result.timed_out:
+                    await _expire_after_strip_timeout(db, subscription_id)
                 await db.commit()
         # Уже после коммита и вне блокировки: уведомление не должно ни задерживать
         # согласователь, ни объявлять состояние, которое не записалось.
@@ -1243,6 +1246,52 @@ async def _reactivate_after_traffic_reset(
         grace_session_id=session.id,
         used_before=session.billing_before.used_traffic_bytes,
         used_now=billing.used_traffic_bytes,
+    )
+    return True
+
+
+async def _expire_after_strip_timeout(db: AsyncSession, subscription_id: int) -> bool:
+    """Режим «без белых списков» дожил до конца подписки — подписка истекла.
+
+    Мониторинг гасит только ACTIVE, а вебхук user.expired пришёл, пока сессия была
+    открыта, и погашен как эхо оверлея. Без этого шага подписка висела бы LIMITED с
+    прошедшей датой до ночной синхронизации, и человек не получал обычный grace по
+    истечению (тест-юзер, 03.11). Помечаем кандидатом — тот же проход воркера его
+    выдаст. Коммитит вызывающий.
+    """
+    row = (
+        await db.execute(
+            select(GraceAccessSessionModel)
+            .where(GraceAccessSessionModel.subscription_id == subscription_id)
+            .order_by(GraceAccessSessionModel.updated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    overlay = row.overlay if row is not None and isinstance(row.overlay, dict) else {}
+    if (
+        row is None
+        or row.state != GraceSessionState.COMPLETED.value
+        or row.completion_reason != GraceCompletionReason.TIMEOUT.value
+        or not overlay.get('strip_squads')
+    ):
+        return False
+    subscription = await db.get(Subscription, subscription_id)
+    now = datetime.now(UTC)
+    if (
+        subscription is None
+        or subscription.status != SubscriptionStatus.LIMITED.value
+        or subscription.end_date is None
+        or _as_utc(subscription.end_date) > now
+    ):
+        return False
+    subscription.status = SubscriptionStatus.EXPIRED.value
+    subscription.grace_candidate_reason = GraceReason.EXPIRED.value
+    subscription.grace_candidate_at = now
+    subscription.updated_at = now
+    await db.flush((subscription,))
+    logger.info(
+        'Grace без белых списков кончился с подпиской — подписка истекла, кандидат на grace по истечению',
+        subscription_id=subscription_id,
     )
     return True
 
