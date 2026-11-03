@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
 from app.cabinet.routes import account_linking
@@ -369,3 +369,70 @@ async def test_multi_merge_keeps_both_identities_independent(postgres_database, 
             await db.refresh(user)
             assert user.balance_kopeks == 800
             assert user.telegram_id == 102
+
+
+async def test_deleted_event_for_user_the_bot_itself_deleted_is_not_an_error(postgres_database, monkeypatch):
+    """Прод 03.11: бот удаляет юзера (админка, delete_user_account), удаляет его и в
+    панели ещё до своего коммита, и панель сразу шлёт user.deleted. Вебхук находит
+    строку, ждёт блокировку, а после коммита строки уже нет: lock_user_for_update
+    падал NoResultFound, в админ-чат уходила ошибка. Это не ошибка — юзера нет."""
+    monkeypatch.setattr(settings, 'SALES_MODE', 'tariffs')
+    monkeypatch.setattr(settings, 'MULTI_TARIFF_ENABLED', False)
+    monkeypatch.setattr(RemnaWaveWebhookService, '_intentional_panel_deletions_by_id', {})
+    monkeypatch.setattr(RemnaWaveWebhookService, '_intentional_panel_deletions_by_telegram_id', {})
+    monkeypatch.setattr(RemnaWaveWebhookService, '_recent_recreations', {})
+    now = datetime.now(UTC)
+    async with postgres_sessions(postgres_database, list(Base.metadata.sorted_tables)) as (db, webhook_db):
+        db.add(User(id=1, email='gone@example.com', status='active', language='ru', remnawave_id=9001))
+        db.add(
+            Subscription(
+                id=1,
+                user_id=1,
+                status='active',
+                start_date=now,
+                end_date=now + timedelta(days=30),
+                remnawave_id=9001,
+                remnawave_short_uuid='masked-1',
+                remnawave_short_id='local-1',
+                subscription_url='https://subscription.example/1',
+            )
+        )
+        await db.commit()
+        service = RemnaWaveWebhookService(AsyncMock())
+        notify = AsyncMock()
+        monkeypatch.setattr(service, '_notify_user', notify)
+        resolved, resume = asyncio.Event(), asyncio.Event()
+        original = service._resolve_user_and_subscription
+
+        async def pause_after_first_resolve(*args):
+            result = await original(*args)
+            if not resolved.is_set():
+                resolved.set()
+                await resume.wait()
+            return result
+
+        monkeypatch.setattr(service, '_resolve_user_and_subscription', pause_after_first_resolve)
+        task = asyncio.create_task(
+            service._process_user_event(
+                webhook_db,
+                'user.deleted',
+                {'id': 9001, 'shortUuid': 'masked-1'},
+                service._handle_user_deleted,
+            )
+        )
+        try:
+            await asyncio.wait_for(resolved.wait(), 5)
+            # Удаление ботом держит строку заблокированной до коммита.
+            await db.execute(delete(Subscription).where(Subscription.user_id == 1))
+            await db.execute(delete(User).where(User.id == 1))
+            resume.set()
+            await asyncio.sleep(0.3)
+            assert not task.done(), 'вебхук должен ждать блокировку удаляемой строки'
+            await db.commit()
+            assert await asyncio.wait_for(task, 10) is False
+            notify.assert_not_awaited()
+        finally:
+            resume.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

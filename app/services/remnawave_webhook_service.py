@@ -19,7 +19,7 @@ import structlog
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import delete, inspect as sa_inspect, select
-from sqlalchemy.exc import PendingRollbackError
+from sqlalchemy.exc import NoResultFound, PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
@@ -397,7 +397,14 @@ class RemnaWaveWebhookService:
             # A merge may commit after the first lookup, transferring identity
             # and deleting the selected row. Serialize with merge, refresh, then
             # resolve again before any destructive handler side effects.
-            await lock_user_for_update(db, user)
+            try:
+                await lock_user_for_update(db, user)
+            except NoResultFound:
+                # Строку удалили, пока ждали блокировку. Так бывает всегда, когда
+                # пользователя удаляет сам бот: панель шлёт user.deleted раньше,
+                # чем коммитится удаление в боте. Повторный поиск ниже решает,
+                # остался ли у этой личности владелец.
+                pass
             user, subscription = await self._resolve_user_and_subscription(db, data)
         if not user:
             panel_user_id, short_uuid = self._extract_panel_identity(data)

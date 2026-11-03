@@ -4169,7 +4169,7 @@
   Функции: `test_managed_user_switch_postgres`
 - `tests/database/test_merge_deleted_webhook_postgres.py` — Python-модуль
   Классы: нет
-  Функции: `panel`, `test_late_deleted_event_after_email_telegram_merge_preserves_paid_subscription`, `test_deleted_event_targets_only_current_identity`, `test_rotated_short_id_keeps_legacy_numeric_identity`, `test_deleted_event_resolved_before_merge_commit_cannot_clear_survivor_identity`, `test_multi_merge_keeps_both_identities_independent`
+  Функции: `panel`, `test_late_deleted_event_after_email_telegram_merge_preserves_paid_subscription`, `test_deleted_event_targets_only_current_identity`, `test_rotated_short_id_keeps_legacy_numeric_identity`, `test_deleted_event_resolved_before_merge_commit_cannot_clear_survivor_identity`, `test_multi_merge_keeps_both_identities_independent`, `test_deleted_event_for_user_the_bot_itself_deleted_is_not_an_error` — Прод 03.11: бот удаляет юзера (админка, delete_user_account), удаляет его и в
 - `tests/database/test_merge_grace_guard_postgres.py` — Python-модуль
   Классы: нет
   Функции: `test_open_grace_merge_rejection_preserves_identity_money_and_retry`
