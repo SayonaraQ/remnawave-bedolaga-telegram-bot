@@ -47,7 +47,13 @@ from app.services.admin_notification_service import AdminNotificationService
 from app.services.grace_access_runtime import get_open_grace_subscription_ids, grace_access_runtime
 from app.services.grace_access_service import GraceReason
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
-from app.services.panel_sync import WEBHOOK, panel_date_behind_paid_renewal, project_onto_subscription, read_panel_user
+from app.services.panel_sync import (
+    WEBHOOK,
+    panel_date_behind_paid_renewal,
+    panel_date_is_grace_overlay,
+    project_onto_subscription,
+    read_panel_user,
+)
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button, build_subscription_extend_button
 
 
@@ -1402,7 +1408,11 @@ class RemnaWaveWebhookService:
             paid_at=paid_at,
         )
         changed = bool(changed_fields)
-        if panel_date_behind_paid_renewal(subscription, snapshot, paid_at=paid_at):
+        # Дата оверлея при открытом grace — не «запись не дошла»: срок за продлением
+        # ведёт сверка grace. Повтор здесь писал канон в панель мимо grace, а каждая
+        # запись рождала новый user.modified (тест-юзер, 03.11).
+        overlay_date = grace_open and panel_date_is_grace_overlay(subscription, snapshot)
+        if not overlay_date and panel_date_behind_paid_renewal(subscription, snapshot, paid_at=paid_at):
             # Запись оплаченного срока в панель не дошла: держим срок и досылаем.
             from app.services.remnawave_retry_queue import remnawave_retry_queue
 

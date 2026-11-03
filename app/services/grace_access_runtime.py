@@ -65,6 +65,7 @@ from app.services.grace_access_service import (
     GraceSessionState,
     GraceStartDecision,
     GraceStartResult,
+    billing_has_recovered,
     billing_is_eligible,
     build_incident_key,
     panel_is_safe_pending_source,
@@ -1295,6 +1296,22 @@ async def _adopt_panel_traffic_reset(
         used_panel=snapshot.used_traffic_bytes,
     )
     return True
+
+
+async def strip_grace_holds_canonical(db: AsyncSession, subscription_id: int) -> bool:
+    """Открыт grace «без белых списков», а трафик не вернулся: канон в панель не пишем.
+
+    Продление днями ставит подписке ``active``, и обычный путь апдейта панели
+    счёл бы это восстановлением: записал бы полный канон с белыми списками при
+    исчерпанном трафике — панель тут же снова LIMITED, новая сессия. Так и было
+    на проде 03.11 (тест-юзер): вебхук «срок в панели короче оплаченного» ставил
+    повтор, повтор писал канон. Дату за продлением ведёт сверка grace.
+    """
+    session = await SQLAlchemyGraceSessionStore(db, subscription_id=subscription_id).get_open(subscription_id)
+    if session is None or not session.overlay.strip_squads:
+        return False
+    billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
+    return billing is not None and not billing_has_recovered(session, billing)
 
 
 async def get_open_grace_subscription_ids(db: AsyncSession) -> set[int]:

@@ -209,7 +209,10 @@ class SubscriptionService:
                 logger.error('Пользователь не найден', user_id=subscription.user_id)
                 return None
 
-            from app.services.grace_access_runtime import lock_grace_sensitive_panel_updates
+            from app.services.grace_access_runtime import (
+                lock_grace_sensitive_panel_updates,
+                strip_grace_holds_canonical,
+            )
 
             await lock_grace_sensitive_panel_updates(db, (subscription.id,))
             validation_success = await self.validate_and_clean_subscription(db, subscription, user)
@@ -225,7 +228,11 @@ class SubscriptionService:
             preserve_open_grace = (
                 subscription.id in open_grace_ids
                 and user.status == 'active'
-                and subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                and (
+                    subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                    # «Без белых списков»: продление днями — active, но трафик не вернулся.
+                    or await strip_grace_holds_canonical(db, subscription.id)
+                )
             )
 
             # Загружаем tariff заранее, чтобы избежать lazy loading в async контексте
@@ -577,6 +584,7 @@ class SubscriptionService:
             from app.services.grace_access_runtime import (
                 apply_recovered_grace_update_locked,
                 lock_grace_sensitive_panel_updates,
+                strip_grace_holds_canonical,
             )
 
             open_grace_ids = await lock_grace_sensitive_panel_updates(db, (subscription.id,))
@@ -589,7 +597,11 @@ class SubscriptionService:
             preserve_open_grace = (
                 subscription.id in open_grace_ids
                 and user.status == 'active'
-                and subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                and (
+                    subscription.actual_status in (SubscriptionStatus.EXPIRED.value, SubscriptionStatus.LIMITED.value)
+                    # «Без белых списков»: продление днями — active, но трафик не вернулся.
+                    or await strip_grace_holds_canonical(db, subscription.id)
+                )
             )
             if preserve_open_grace:
                 logger.info(
