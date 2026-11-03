@@ -321,3 +321,47 @@ async def test_gateway_reads_the_panel_once_until_it_writes(monkeypatch):
     await plain.read_snapshot(PANEL_ID)
     await plain.read_snapshot(PANEL_ID)
     assert len(calls) == 4, 'без cache_reads всё как раньше'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('bot_used', 'expected'), [(0.0, 50.0), (49.5, 50.0), (60.0, 60.0)])
+async def test_grant_syncs_bot_usage_up_to_the_remembered_one(monkeypatch, bot_used, expected):
+    """Расход подписки после выдачи = запомненному (или больше): только сброс может его опустить."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.services import grace_access_runtime as rt
+    from tests.fixtures.sqlite_memory import ensure_real_aiosqlite
+
+    ensure_real_aiosqlite(monkeypatch)
+    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=list(Base.metadata.sorted_tables)))
+    maker = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    try:
+        async with maker() as db:
+            db.add(User(id=1, telegram_id=1001, first_name='U', language='ru', status='active', balance_kopeks=0))
+            await db.flush()
+            db.add(
+                Subscription(
+                    id=42,
+                    remnawave_short_id='sub42',
+                    user_id=1,
+                    status='limited',
+                    is_trial=False,
+                    start_date=NOW - timedelta(days=26),
+                    end_date=END_AT,
+                    traffic_limit_gb=50,
+                    traffic_used_gb=bot_used,
+                    device_limit=3,
+                    connected_squads=[TARIFF_SQUAD],
+                    remnawave_id=PANEL_ID,
+                )
+            )
+            await db.commit()
+            await rt.SQLAlchemyGraceSessionStore(db, subscription_id=42).create(_session())
+            await db.commit()
+        async with maker() as db:
+            used = (await db.execute(select(Subscription.traffic_used_gb).where(Subscription.id == 42))).scalar_one()
+        assert used == pytest.approx(expected)
+    finally:
+        await engine.dispose()

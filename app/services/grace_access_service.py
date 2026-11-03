@@ -387,6 +387,13 @@ class GraceAccessService:
                 panel_snapshot,
                 used_traffic_bytes=billing.used_traffic_bytes,
             )
+        billing_before = billing
+        if panel_snapshot.used_traffic_bytes > billing.used_traffic_bytes:
+            # Расход в бота приходит только синхронизацией, панель знает его сразу.
+            # Запомни бот устаревший (вплоть до нуля) — сброс трафика потом не
+            # отличить от «ничего не случилось», и grace по трафику висел бы до
+            # конца подписки. Тест-юзер на проде, 2026-11-03.
+            billing_before = replace(billing, used_traffic_bytes=panel_snapshot.used_traffic_bytes)
         overlay = build_panel_overlay(
             panel_snapshot,
             reason,
@@ -402,7 +409,7 @@ class GraceAccessService:
             reason=reason,
             incident_key=incident_key,
             state=GraceSessionState.PENDING,
-            billing_before=billing,
+            billing_before=billing_before,
             panel_before=panel_snapshot,
             overlay=overlay,
             started_at=now,

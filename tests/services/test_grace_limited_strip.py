@@ -94,7 +94,17 @@ async def started(policy=None, billing=None, snapshot=None):
         policy=policy or strip_policy(),
     )
     result = await service.start_if_eligible(billing, GraceReason.LIMITED)
+    if result.session is not None:
+        # Как хранилище на проде: расход подписки = расход, запомненный при выдаче.
+        billing_gateway.state = replace(
+            billing_gateway.state, used_traffic_bytes=result.session.billing_before.used_traffic_bytes
+        )
     return result, service, store, panel, billing_gateway, clock
+
+
+def synced(billing: GraceBillingState, store) -> GraceBillingState:
+    """Биллинг после выдачи: расход уже совпадает с запомненным."""
+    return replace(billing, used_traffic_bytes=store.only_session().billing_before.used_traffic_bytes)
 
 
 @pytest.mark.asyncio
@@ -154,7 +164,7 @@ async def test_default_strategy_is_unchanged():
 async def test_renewal_by_days_keeps_the_mode_and_moves_the_date(renewed_status):
     _, service, store, panel, billing_gateway, clock = await started()
     new_end = END + timedelta(days=30)
-    billing_gateway.state = limited_billing(end_at=new_end, status=renewed_status)
+    billing_gateway.state = synced(limited_billing(end_at=new_end, status=renewed_status), store)
     clock.advance(timedelta(minutes=1))
 
     await service.reconcile()
@@ -181,7 +191,7 @@ async def test_renewal_by_days_keeps_the_mode_and_moves_the_date(renewed_status)
 async def test_admin_shortening_the_date_is_followed_too():
     _, service, store, _, billing_gateway, clock = await started()
     shorter = END - timedelta(days=5)
-    billing_gateway.state = limited_billing(end_at=shorter)
+    billing_gateway.state = synced(limited_billing(end_at=shorter), store)
 
     clock.advance(timedelta(minutes=1))
     await service.reconcile()
@@ -196,7 +206,7 @@ async def test_overlay_date_echoed_into_billing_is_never_followed():
     """Эхо даты оверлея в биллинге не двигает оверлей: иначе каждый проход сдвигал бы дату ещё на минуту."""
     _, service, store, panel, billing_gateway, clock = await started()
     session = store.only_session()
-    billing_gateway.state = limited_billing(end_at=session.overlay.expire_at)
+    billing_gateway.state = synced(limited_billing(end_at=session.overlay.expire_at), store)
 
     clock.advance(timedelta(minutes=1))
     await service.reconcile()
@@ -242,7 +252,7 @@ def test_a_later_date_alone_is_not_recovery_for_strip_sessions():
 @pytest.mark.asyncio
 async def test_admin_squad_change_is_a_conflict():
     _, service, store, panel, billing_gateway, clock = await started()
-    billing_gateway.state = limited_billing(squad_uuids=(EU_SQUAD,))
+    billing_gateway.state = synced(limited_billing(squad_uuids=(EU_SQUAD,)), store)
 
     clock.advance(timedelta(minutes=1))
     await service.reconcile()
@@ -309,7 +319,7 @@ async def test_follow_survives_a_crash_between_panel_patch_and_save():
     """Панель уже на новой дате, а сессия ещё на старой: досохраняем, без конфликта и без второго PATCH."""
     _, service, store, panel, billing_gateway, clock = await started()
     new_end = END + timedelta(days=30)
-    billing_gateway.state = limited_billing(end_at=new_end, status='active')
+    billing_gateway.state = synced(limited_billing(end_at=new_end, status='active'), store)
     panel.snapshot = replace(panel.snapshot, expire_at=new_end - STRIP_OVERLAY_DATE_OFFSET)
     applied = len(panel.applied_overlays)
 
@@ -321,3 +331,26 @@ async def test_follow_survives_a_crash_between_panel_patch_and_save():
     assert session.overlay.expire_at == new_end - STRIP_OVERLAY_DATE_OFFSET
     assert len(panel.applied_overlays) == applied
     assert panel.applied_billing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('policy', [strip_policy(), make_policy()], ids=['strip', 'squad'])
+async def test_reset_is_noticed_even_if_the_bot_never_synced_usage(policy):
+    """Найдено на проде 03.11 тест-юзером: расход в бота приходит только синхронизацией.
+
+    Человек дожёг трафик до ближайшей синхронизации — в боте расход 0, в панели
+    2 МБ. Если запомнить при выдаче нулевой расход, сброс (0 → 0) не заметить
+    никогда, и сессия висит до конца подписки. Запоминаем большее из двух.
+    """
+    result, service, store, panel, billing_gateway, clock = await started(
+        policy=policy,
+        billing=limited_billing(used_traffic_bytes=0),
+        snapshot=limited_snapshot(traffic_limit_bytes=MIB, used_traffic_bytes=2 * MIB),
+    )
+    assert result.session.billing_before.used_traffic_bytes == 2 * MIB
+
+    billing_gateway.state = limited_billing(used_traffic_bytes=0, status='active')
+    clock.advance(timedelta(minutes=1))
+    await service.reconcile()
+
+    assert store.only_session().completion_reason is GraceCompletionReason.PAID

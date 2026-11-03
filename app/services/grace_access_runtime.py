@@ -224,6 +224,23 @@ class SQLAlchemyGraceSessionStore:
                     .where(Subscription.id == session.subscription_id)
                     .values(grace_overlay_expire_at=_as_utc(session.overlay.expire_at))
                 )
+                if session.reason is GraceReason.LIMITED:
+                    # Расход, с которым сравнивается сброс, должен совпадать с расходом
+                    # подписки: синхронизация потом приносит из панели то же или
+                    # больше, меньше — только настоящий сброс. Иначе устаревший расход
+                    # бота после продления днями выглядел бы как сброс (ложный «оплачено»),
+                    # а нулевой не дал бы заметить настоящий сброс никогда.
+                    await self._db.execute(
+                        update(Subscription)
+                        .where(
+                            Subscription.id == session.subscription_id,
+                            or_(
+                                Subscription.traffic_used_gb.is_(None),
+                                Subscription.traffic_used_gb < session.billing_before.used_traffic_bytes / 1024**3,
+                            ),
+                        )
+                        .values(traffic_used_gb=session.billing_before.used_traffic_bytes / 1024**3)
+                    )
             # PENDING must be durable before the external PATCH.  If the process
             # dies after this commit, reconciliation can safely finish or undo it.
             await self._db.commit()
