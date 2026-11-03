@@ -279,15 +279,19 @@ async def show_bonuses_menu(
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                types.InlineKeyboardButton(text='🤝 Партнёрка', callback_data='menu_referrals'),
-                types.InlineKeyboardButton(text='🎫 Промокод', callback_data='menu_promocode'),
+                types.InlineKeyboardButton(
+                    text=texts.t('MENU_BONUSES_PARTNER_BUTTON', '🤝 Partner'), callback_data='menu_referrals'
+                ),
+                types.InlineKeyboardButton(
+                    text=texts.t('MENU_BONUSES_PROMOCODE_BUTTON', '🎫 Promo code'), callback_data='menu_promocode'
+                ),
             ],
             [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
         ]
     )
 
     await callback.message.edit_text(
-        '🎁 <b>Бонусы</b>\n\nВыберите раздел:',
+        texts.t('MENU_BONUSES_TITLE', '🎁 <b>Bonuses</b>\n\nChoose a section:'),
         reply_markup=keyboard,
         parse_mode='HTML',
     )
