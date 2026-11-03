@@ -346,3 +346,26 @@ def test_managed_incident_key_follows_the_ledger_base_not_the_panel():
     assert build_incident_key(legacy, GraceReason.LIMITED, last_traffic_reset_at=panel_reset).endswith(
         panel_reset.isoformat()
     )
+
+
+@pytest.mark.parametrize(
+    ('managed', 'quota_disabled', 'starts'),
+    [(True, True, True), (True, False, False), (False, False, False)],
+    ids=['managed_quota_cut', 'admin_disabled', 'legacy_disabled'],
+)
+async def test_managed_quota_cut_is_a_traffic_incident(managed, quota_disabled, starts):
+    """Прод 03.11, тест-юзер: продлили истёкшую подписку с нулевым остатком — учёт
+    поставил панели DISABLED, grace по трафику счёл это отключением и не выдал режим."""
+    from app.services.grace_access_service import GraceStartDecision
+    from tests.services.test_grace_limited_strip import WL_SQUAD, limited_billing, limited_snapshot, started
+
+    result, *_ = await started(
+        billing=limited_billing(traffic_managed=managed, traffic_quota_disabled=quota_disabled),
+        snapshot=limited_snapshot(status='DISABLED'),
+    )
+    if starts:
+        assert result.decision is GraceStartDecision.STARTED
+        assert result.session.overlay.status == 'ACTIVE'
+        assert WL_SQUAD not in result.session.overlay.squad_uuids
+    else:
+        assert result.decision is GraceStartDecision.SUPERSEDED

@@ -424,15 +424,18 @@ async def _with_managed_traffic(
 
     row = (
         await db.execute(
-            select(TrafficAccountingState.phase, TrafficAccountingState.last_base_operation_at).where(
-                TrafficAccountingState.subscription_id == subscription.id
-            )
+            select(
+                TrafficAccountingState.phase,
+                TrafficAccountingState.last_base_operation_at,
+                TrafficAccountingState.quota_disabled,
+            ).where(TrafficAccountingState.subscription_id == subscription.id)
         )
     ).first()
-    phase, period_at = (row[0], row[1]) if row is not None else (None, None)
+    phase, period_at, quota_disabled = (row[0], row[1], bool(row[2])) if row is not None else (None, None, False)
     period_at = _as_utc(period_at) if period_at is not None else None
+    billing = replace(billing, traffic_managed=True, traffic_period_at=period_at, traffic_quota_disabled=quota_disabled)
     if phase != 'ready' or billing.traffic_limit_bytes <= 0:
-        return replace(billing, traffic_managed=True, traffic_period_at=period_at)
+        return billing
     now = datetime.now(UTC)
     remaining = await db.scalar(
         select(func.coalesce(func.sum(TrafficAllowance.remaining_bytes), 0)).where(
@@ -441,7 +444,7 @@ async def _with_managed_traffic(
         )
     )
     used = max(0, billing.traffic_limit_bytes - int(remaining or 0))
-    return replace(billing, used_traffic_bytes=used, traffic_managed=True, traffic_period_at=period_at)
+    return replace(billing, used_traffic_bytes=used)
 
 
 @dataclass(frozen=True, slots=True)

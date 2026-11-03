@@ -184,6 +184,9 @@ class GraceBillingState:
     #: Managed: момент последней выдачи базы в учёте бота. Заменяет в ключе
     #: инцидента дату сброса панели — у managed панель не сбрасывает никогда.
     traffic_period_at: datetime | None = None
+    #: Managed: учёт сам закрыл доступ по исчерпанной квоте — в панели тогда
+    #: DISABLED, а не LIMITED (LIMITED PATCH-ем не выставить).
+    traffic_quota_disabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +373,9 @@ class GraceAccessService:
         panel_snapshot = await self._panel.read_snapshot(billing.remnawave_id)
         if not panel_snapshot:
             return GraceStartResult(GraceStartDecision.PANEL_USER_NOT_FOUND)
-        if not panel_status_matches_reason(panel_snapshot.status, reason):
+        if not panel_status_matches_reason(panel_snapshot.status, reason) and not managed_quota_cut(
+            billing, panel_snapshot.status, reason
+        ):
             logger.warning(
                 'Grace candidate panel status no longer matches incident',
                 subscription_id=billing.subscription_id,
@@ -1083,6 +1088,23 @@ def billing_is_eligible(
 def billing_is_revoked(billing: GraceBillingState) -> bool:
     """Return whether grace must be removed immediately for safety."""
     return _normalize_status(billing.user_status) != 'active' or _normalize_status(billing.status) == 'disabled'
+
+
+def managed_quota_cut(billing: GraceBillingState, status: str, reason: GraceReason) -> bool:
+    """DISABLED в панели — это исчерпанная квота managed-подписки, а не отключение.
+
+    Учёт 5.2.0 закрывает доступ при нулевом остатке статусом DISABLED: LIMITED
+    панель выводит сама, PATCH-ем его не поставить. Если бот успел записать DISABLED
+    раньше, чем панель сама поставила LIMITED (или подписку продлили с нулевым
+    остатком), grace по трафику иначе не выдавался вовсе — прод 03.11, тест-юзер.
+    Админское отключение квотой не помечено и сюда не попадает.
+    """
+    return (
+        reason is GraceReason.LIMITED
+        and billing.traffic_managed
+        and billing.traffic_quota_disabled
+        and _normalize_status(status) == 'disabled'
+    )
 
 
 def panel_status_matches_reason(status: str, reason: GraceReason) -> bool:
