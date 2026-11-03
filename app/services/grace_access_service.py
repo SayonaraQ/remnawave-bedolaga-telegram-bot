@@ -737,7 +737,8 @@ class GraceAccessService:
             if followed is not None:
                 return followed
 
-        if session.overlay.strip_squads and session.state is GraceSessionState.ACTIVE and not force_restore:
+        strip_open = session.state in {GraceSessionState.ACTIVE, GraceSessionState.RESTORING}
+        if session.overlay.strip_squads and strip_open and not force_restore:
             now = _as_utc(self._clock())
             if strip_subscription_ended(session, billing, now=now):
                 # Подписка просто кончилась: штатный конец режима, не конфликт. Снимок —
@@ -868,6 +869,9 @@ class GraceAccessService:
             overlay=new_overlay,
             grace_until=new_overlay.expire_at,
             billing_before=replace(session.billing_before, end_at=_as_utc(billing.end_at)),
+            # Откат ведёт к снимку: в нём тоже настоящая дата, иначе таймаут вернул бы
+            # в панель прежнюю (а будущая включила бы истёкший аккаунт обратно).
+            panel_before=replace(session.panel_before, expire_at=_as_utc(billing.end_at)),
             updated_at=now,
             last_error=None,
         )

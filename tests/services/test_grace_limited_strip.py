@@ -381,3 +381,36 @@ async def test_admin_moving_the_end_to_a_few_minutes_away_is_followed_not_a_conf
     assert session.state is GraceSessionState.ACTIVE
     assert session.overlay.expire_at == soon - STRIP_OVERLAY_DATE_OFFSET
     assert panel.applied_billing == []
+
+
+@pytest.mark.asyncio
+async def test_follow_moves_the_restore_snapshot_date_too():
+    """Прод 03.11: откат шёл к снимку со старой (будущей) датой — панель снова включала
+    аккаунт, он упирался в лимит, следующий проход видел LIMITED и закрывал конфликтом.
+    И после продления днями откат по таймауту вернул бы в панель прежнюю дату."""
+    _, service, store, _, billing_gateway, clock = await started()
+    new_end = END + timedelta(days=30)
+    billing_gateway.state = synced(limited_billing(end_at=new_end), store)
+    clock.advance(timedelta(minutes=1))
+
+    await service.reconcile()
+
+    assert store.only_session().panel_before.expire_at == new_end
+
+
+@pytest.mark.asyncio
+async def test_subscription_end_restore_retried_after_pending_is_still_a_timeout():
+    _, service, store, panel, billing_gateway, clock = await started()
+    panel.pending_restore_attempts = 1
+    clock.current = END + timedelta(seconds=10)
+    billing_gateway.state = synced(limited_billing(status='expired'), store)
+
+    await service.reconcile()
+    assert store.only_session().state is GraceSessionState.RESTORING
+
+    clock.advance(timedelta(minutes=1))
+    await service.reconcile()
+
+    session = store.only_session()
+    assert session.completion_reason is GraceCompletionReason.TIMEOUT
+    assert panel.applied_billing == []
