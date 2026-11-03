@@ -181,6 +181,9 @@ class GraceBillingState:
     #: учёта бота, а не счётчик панели. Панель у такой подписки на NO_RESET, её
     #: счётчик только растёт и с номиналом не сравним. В JSON сессии не пишется.
     traffic_managed: bool = False
+    #: Managed: момент последней выдачи базы в учёте бота. Заменяет в ключе
+    #: инцидента дату сброса панели — у managed панель не сбрасывает никогда.
+    traffic_period_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1001,6 +1004,11 @@ def build_incident_key(
     end_at = _as_utc(billing.end_at).isoformat() if billing.end_at else 'none'
     if reason is GraceReason.EXPIRED:
         return f'{reason.value}:{end_at}'
+    # Managed-учёт (5.2.0): панель на NO_RESET, её дата сброса не меняется. Новый
+    # месяц — это выданная ботом база; без неё второе исчерпание после закрытия
+    # grace базой 1-го числа совпадало бы с прошлым инцидентом и grace не получало.
+    if billing.traffic_managed and billing.traffic_period_at is not None:
+        last_traffic_reset_at = billing.traffic_period_at
     reset_at = _as_utc(last_traffic_reset_at).isoformat() if last_traffic_reset_at else 'unknown'
     return f'{reason.value}:{end_at}:{billing.traffic_limit_bytes}:{reset_at}'
 

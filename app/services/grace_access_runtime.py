@@ -422,11 +422,17 @@ async def _with_managed_traffic(
         return billing
     from app.database.models import TrafficAccountingState, TrafficAllowance
 
-    phase = await db.scalar(
-        select(TrafficAccountingState.phase).where(TrafficAccountingState.subscription_id == subscription.id)
-    )
+    row = (
+        await db.execute(
+            select(TrafficAccountingState.phase, TrafficAccountingState.last_base_operation_at).where(
+                TrafficAccountingState.subscription_id == subscription.id
+            )
+        )
+    ).first()
+    phase, period_at = (row[0], row[1]) if row is not None else (None, None)
+    period_at = _as_utc(period_at) if period_at is not None else None
     if phase != 'ready' or billing.traffic_limit_bytes <= 0:
-        return replace(billing, traffic_managed=True)
+        return replace(billing, traffic_managed=True, traffic_period_at=period_at)
     now = datetime.now(UTC)
     remaining = await db.scalar(
         select(func.coalesce(func.sum(TrafficAllowance.remaining_bytes), 0)).where(
@@ -435,7 +441,7 @@ async def _with_managed_traffic(
         )
     )
     used = max(0, billing.traffic_limit_bytes - int(remaining or 0))
-    return replace(billing, used_traffic_bytes=used, traffic_managed=True)
+    return replace(billing, used_traffic_bytes=used, traffic_managed=True, traffic_period_at=period_at)
 
 
 @dataclass(frozen=True, slots=True)

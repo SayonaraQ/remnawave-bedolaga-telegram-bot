@@ -157,9 +157,12 @@ async def test_billing_reads_managed_usage_from_the_ledger(monkeypatch):
         sub = await db.get(Subscription, 1)
         sub.traffic_accounting_mode = 'managed'
         await db.commit()
+        state.last_base_operation_at = now - timedelta(days=2)
+        await db.commit()
         managed = await SQLAlchemyGraceBillingGateway(db).get_subscription(1)
         assert managed.traffic_managed is True
         assert managed.used_traffic_bytes == 10 * GIB - GIB // 2
+        assert managed.traffic_period_at == now - timedelta(days=2)
 
 
 @pytest.mark.parametrize('panel_used_gb', [500, 40])
@@ -325,3 +328,21 @@ async def test_strip_grant_names_the_ledger_reset_date(lab, monkeypatch):
 
     message = lab.user.await_args.kwargs['telegram_message']
     assert 'недоступны до 01.02.' in message, message
+
+
+def test_managed_incident_key_follows_the_ledger_base_not_the_panel():
+    """Прод 03.11, тест-юзер: база 1-го числа закрыла grace, второе исчерпание
+    получило тот же ключ (панель на NO_RESET не сбрасывает) — grace не выдавался."""
+    from app.services.grace_access_service import GraceReason, build_incident_key
+    from tests.services.test_grace_limited_strip import limited_billing
+
+    panel_reset = datetime(2026, 10, 1, 0, 20, tzinfo=UTC)
+    november = limited_billing(traffic_managed=True, traffic_period_at=datetime(2026, 11, 3, 20, tzinfo=UTC))
+    december = replace(november, traffic_period_at=datetime(2026, 12, 1, 0, 20, tzinfo=UTC))
+    key = build_incident_key(november, GraceReason.LIMITED, last_traffic_reset_at=panel_reset)
+    assert key != build_incident_key(december, GraceReason.LIMITED, last_traffic_reset_at=panel_reset)
+    assert key == build_incident_key(november, GraceReason.LIMITED, last_traffic_reset_at=None)
+    legacy = limited_billing()
+    assert build_incident_key(legacy, GraceReason.LIMITED, last_traffic_reset_at=panel_reset).endswith(
+        panel_reset.isoformat()
+    )
