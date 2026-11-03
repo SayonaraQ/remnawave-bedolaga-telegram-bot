@@ -232,3 +232,22 @@ async def test_strip_timeout_at_the_end_expires_the_subscription(db_maker, compl
     assert changed is expired
     assert (sub.status == 'expired') is expired
     assert (sub.grace_candidate_reason == 'expired') is expired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('completion', 'strip', 'expired'), [('timeout', True, True), ('paid', True, False)])
+async def test_each_pass_expires_a_subscription_ended_after_strip_timeout(
+    db_maker, monkeypatch, completion, strip, expired
+):
+    """Прод 03.11, тест-юзер на managed-учёте: таймаут режима за минуту до конца,
+    user.expired погашен как эхо оверлея, подписка осталась limited после конца —
+    доставка учёта PATCH-ила панель на каждый user.modified (~700 в минуту)."""
+    from app.services import grace_access_runtime as rt
+
+    await _close_strip_session(db_maker, completion, strip=strip)
+    monkeypatch.setattr(rt, 'AsyncSessionLocal', db_maker)
+    await rt.GraceAccessRuntime()._expire_ended_strip_subscriptions()
+    async with db_maker() as db:
+        sub = await db.get(Subscription, 42)
+    assert (sub.status == 'expired') is expired
+    assert (sub.grace_candidate_reason == 'expired') is expired

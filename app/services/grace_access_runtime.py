@@ -1051,8 +1051,53 @@ class GraceAccessRuntime:
             return
 
         await self._reconcile_open(drain=self._mode is GraceAccessMode.DRAIN)
+        await self._expire_ended_strip_subscriptions()
         if self._mode is GraceAccessMode.ACTIVE:
             await self._discover_candidates(observe_only=False)
+
+    async def _expire_ended_strip_subscriptions(self) -> None:
+        """Режим «без белых списков» кончился таймаутом, а за ним и подписка — она истекла.
+
+        Таймаут срабатывает за минуту до конца, и тот же проход истечь подписке не
+        даёт: дата ещё впереди. Вебхук ``user.expired`` панель шлёт в момент даты
+        оверлея, пока сессия открыта, — он гасится как эхо. Legacy-подписку потом
+        добивает следующий ``user.expired`` (откат вернул панели настоящую дату), а
+        managed (5.2.0) — нет: панель так и остаётся EXPIRED, подписка в боте
+        ``limited``, и доставка учёта на каждый ``user.modified`` шлёт PATCH, который
+        рождает новый ``user.modified`` (прод 03.11, тест-юзер: ~700 в минуту). Мониторинг
+        гасит только ACTIVE. Добиваем здесь, каждым проходом.
+        """
+        now = datetime.now(UTC)
+        try:
+            async with AsyncSessionLocal() as db:
+                ids = (
+                    await db.scalars(
+                        select(Subscription.id)
+                        .where(
+                            Subscription.status == SubscriptionStatus.LIMITED.value,
+                            Subscription.end_date <= now,
+                            Subscription.end_date > now - timedelta(days=2),
+                            Subscription.grace_session_open.is_(False),
+                            Subscription.grace_overlay_expire_at.is_not(None),
+                        )
+                        .order_by(Subscription.end_date)
+                        .limit(50)
+                    )
+                ).all()
+        except Exception:
+            logger.exception('Не удалось найти подписки, истёкшие после grace без белых списков')
+            return
+        for subscription_id in ids:
+            try:
+                async with self._locks.hold(subscription_id):
+                    async with AsyncSessionLocal() as db:
+                        await _acquire_database_lock(db, subscription_id)
+                        if await _expire_after_strip_timeout(db, subscription_id):
+                            await db.commit()
+            except Exception:
+                logger.exception(
+                    'Не удалось истечь подписку после grace без белых списков', subscription_id=subscription_id
+                )
 
     async def force_restore_all(self) -> GraceReconcileResult:
         """Immediately restore every open session; used by the emergency CLI."""
