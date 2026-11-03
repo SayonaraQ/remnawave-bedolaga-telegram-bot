@@ -379,11 +379,25 @@ class _PanelTarget:
 class RemnawaveGracePanelGateway:
     """Changes only fields controlled by the temporary overlay."""
 
-    def __init__(self, *, db: AsyncSession | None = None, subscription_id: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        db: AsyncSession | None = None,
+        subscription_id: int | None = None,
+        cache_reads: bool = False,
+    ) -> None:
         # Сессия и подписка нужны одному: записать хвост грейса — дату, которую
         # PATCH оставляет в панели, — в той же транзакции, что и состояние сессии.
         self._db = db
         self._subscription_id = subscription_id
+        # Один проход сверки по одной сессии читает пользователя панели один раз:
+        # проверка сброса трафика и сама сверка берут одно чтение. Любая запись
+        # в панель чтение забывает — после неё нужно свежее.
+        self._read_cache: dict[int, GracePanelSnapshot | None] | None = {} if cache_reads else None
+
+    def _forget_reads(self) -> None:
+        if self._read_cache is not None:
+            self._read_cache.clear()
 
     async def _remember_grace_tail(self, expire_at: datetime | None) -> None:
         """Запомнить на подписке дату, которую грейс оставляет в панели.
@@ -408,15 +422,19 @@ class RemnawaveGracePanelGateway:
         # client boundary instead of returning None: that is a broken link in our
         # database, not a deleted panel user, and must never be answered by
         # "nothing left to restore".
+        if self._read_cache is not None and remnawave_id in self._read_cache:
+            return self._read_cache[remnawave_id]
         async with remnawave_service.get_api_client() as api:
             panel_user = await api.get_user_by_id(remnawave_id)
-        if panel_user is None:
-            return None
-        return _panel_user_to_snapshot(panel_user)
+        snapshot = None if panel_user is None else _panel_user_to_snapshot(panel_user)
+        if self._read_cache is not None:
+            self._read_cache[remnawave_id] = snapshot
+        return snapshot
 
     async def apply_overlay(self, remnawave_id: int, overlay: GracePanelOverlay) -> None:
         from app.services.remnawave_service import remnawave_service
 
+        self._forget_reads()
         async with remnawave_service.get_api_client() as api:
             # Detach an external squad in a standalone preflight PATCH.  The API
             # client may retry A039 without externalSquadUuid; doing this before
@@ -461,6 +479,7 @@ class RemnawaveGracePanelGateway:
         from app.services.remnawave_service import remnawave_service
 
         now = datetime.now(UTC)
+        self._forget_reads()
 
         async with remnawave_service.get_api_client() as api:
             # Only an explicit 404 reaches this as None.  A malformed local
@@ -586,6 +605,7 @@ class RemnawaveGracePanelGateway:
 
         if not billing.remnawave_id:
             raise GracePanelError('Canonical subscription has no Remnawave user id')
+        self._forget_reads()
         now = datetime.now(UTC)
         target = _build_billing_target(billing, now=now)
 
@@ -1148,8 +1168,9 @@ class GraceAccessRuntime:
         async with self._locks.hold(subscription_id):
             async with AsyncSessionLocal() as db:
                 await _acquire_database_lock(db, subscription_id)
-                await _reactivate_after_traffic_reset(db, subscription_id)
-                core = _build_core(db, subscription_id=subscription_id)
+                panel = RemnawaveGracePanelGateway(db=db, subscription_id=subscription_id, cache_reads=True)
+                await _reactivate_after_traffic_reset(db, subscription_id, panel=panel)
+                core = _build_core(db, subscription_id=subscription_id, panel=panel)
                 result = (
                     await core.drain(limit=1, force_restore=force_restore) if drain else await core.reconcile(limit=1)
                 )
@@ -1160,7 +1181,12 @@ class GraceAccessRuntime:
         return result
 
 
-async def _reactivate_after_traffic_reset(db: AsyncSession, subscription_id: int) -> bool:
+async def _reactivate_after_traffic_reset(
+    db: AsyncSession,
+    subscription_id: int,
+    *,
+    panel: RemnawaveGracePanelGateway | None = None,
+) -> bool:
     """Вернуть подписку в ACTIVE, если трафик сбросился, пока шёл грейс по лимиту.
 
     Ядро грейса биллинг не меняет, а статус из панели во время грейса в бота не
@@ -1177,7 +1203,7 @@ async def _reactivate_after_traffic_reset(db: AsyncSession, subscription_id: int
         return False
     now = datetime.now(UTC)
     if not traffic_reset_ended_limited_incident(session, billing, now=now):
-        if not await _adopt_panel_traffic_reset(db, session, billing):
+        if not await _adopt_panel_traffic_reset(db, session, billing, panel=panel):
             return False
         billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
         if billing is None:
@@ -1203,7 +1229,13 @@ async def _reactivate_after_traffic_reset(db: AsyncSession, subscription_id: int
     return True
 
 
-async def _adopt_panel_traffic_reset(db: AsyncSession, session: GraceAccessSession, billing: Any) -> bool:
+async def _adopt_panel_traffic_reset(
+    db: AsyncSession,
+    session: GraceAccessSession,
+    billing: Any,
+    *,
+    panel: RemnawaveGracePanelGateway | None = None,
+) -> bool:
     """Перенести в подписку расход из панели, если панель его уже сбросила.
 
     Бот узнаёт о сбросе только из синхронизации: вебхука нет (у человека на
@@ -1216,10 +1248,9 @@ async def _adopt_panel_traffic_reset(db: AsyncSession, session: GraceAccessSessi
     """
     if session.reason is not GraceReason.LIMITED or session.state is not GraceSessionState.ACTIVE:
         return False
+    gateway = panel or RemnawaveGracePanelGateway(db=db, subscription_id=session.subscription_id)
     try:
-        panel = await RemnawaveGracePanelGateway(db=db, subscription_id=session.subscription_id).read_snapshot(
-            session.remnawave_id
-        )
+        snapshot = await gateway.read_snapshot(session.remnawave_id)
     except Exception as error:
         logger.warning(
             'Не удалось прочитать расход в панели для grace по трафику',
@@ -1227,16 +1258,16 @@ async def _adopt_panel_traffic_reset(db: AsyncSession, session: GraceAccessSessi
             error=str(error),
         )
         return False
-    if panel is None or not panel.traffic_is_known:
+    if snapshot is None or not snapshot.traffic_is_known:
         return False
-    if panel.used_traffic_bytes >= session.panel_before.used_traffic_bytes:
+    if snapshot.used_traffic_bytes >= session.panel_before.used_traffic_bytes:
         return False
-    if billing.used_traffic_bytes <= panel.used_traffic_bytes:
+    if billing.used_traffic_bytes <= snapshot.used_traffic_bytes:
         return False
     subscription = await db.get(Subscription, session.subscription_id)
     if subscription is None:
         return False
-    subscription.traffic_used_gb = panel.used_traffic_bytes / 1024**3
+    subscription.traffic_used_gb = snapshot.used_traffic_bytes / 1024**3
     subscription.updated_at = datetime.now(UTC)
     await db.flush((subscription,))
     logger.info(
@@ -1244,7 +1275,7 @@ async def _adopt_panel_traffic_reset(db: AsyncSession, session: GraceAccessSessi
         subscription_id=session.subscription_id,
         grace_session_id=session.id,
         used_before=session.panel_before.used_traffic_bytes,
-        used_panel=panel.used_traffic_bytes,
+        used_panel=snapshot.used_traffic_bytes,
     )
     return True
 
@@ -1830,10 +1861,15 @@ async def ensure_no_open_grace_for_users(db: AsyncSession, user_ids: Sequence[in
     await ensure_no_open_grace_for_subscriptions(db, tuple(int(value) for value in result.scalars().all()))
 
 
-def _build_core(db: AsyncSession, *, subscription_id: int | None = None) -> GraceAccessService:
+def _build_core(
+    db: AsyncSession,
+    *,
+    subscription_id: int | None = None,
+    panel: RemnawaveGracePanelGateway | None = None,
+) -> GraceAccessService:
     return GraceAccessService(
         store=SQLAlchemyGraceSessionStore(db, subscription_id=subscription_id),
-        panel=RemnawaveGracePanelGateway(db=db, subscription_id=subscription_id),
+        panel=panel or RemnawaveGracePanelGateway(db=db, subscription_id=subscription_id),
         billing=SQLAlchemyGraceBillingGateway(db),
         policy=_build_policy(),
     )
