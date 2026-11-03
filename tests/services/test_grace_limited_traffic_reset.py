@@ -168,20 +168,22 @@ async def lab(monkeypatch):
     monkeypatch.setattr(rt.settings, 'SALES_MODE', 'tariffs')
     monkeypatch.setattr(rt.settings, 'MULTI_TARIFF_ENABLED', True)
 
-    panel = SimpleNamespace(applied=[])
+    # Расход в панели: по умолчанию не сброшен — расход до grace плюс потраченное на grace.
+    panel = SimpleNamespace(applied=[], used=50 * GIB + GIB // 10, reads=0, instances=0)
 
     class _Panel:
         def __init__(self, **_):
-            pass
+            panel.instances += 1
 
         async def read_snapshot(self, remnawave_id):
             # Панель под действующим оверлеем грейса.
+            panel.reads += 1
             return GracePanelSnapshot(
                 remnawave_id=PANEL_ID,
                 status='ACTIVE',
                 expire_at=GRACE_UNTIL,
                 traffic_limit_bytes=51 * GIB,
-                used_traffic_bytes=GIB // 10,
+                used_traffic_bytes=panel.used,
                 squad_uuids=(GRACE_SQUAD,),
             )
 
@@ -211,6 +213,7 @@ async def test_scheduled_traffic_reset_closes_the_grace_and_restores_the_panel(l
         sub = await db.get(Subscription, 42)
         sub.traffic_used_gb = 0.1  # расход во время грейса синхронизируется, статус — нет
         await db.commit()
+    lab.panel.used = GIB // 10
 
     result = await lab.runtime._process_open(42, drain=False, force_restore=False)
 
@@ -229,3 +232,92 @@ async def test_grace_keeps_running_while_the_traffic_is_not_reset(lab):
     assert status == 'limited'
     assert grace != 'completed'
     assert lab.panel.applied == []
+
+
+@pytest.mark.asyncio
+async def test_panel_reset_closes_the_grace_without_waiting_for_the_daily_sync(lab):
+    """01.11.2026: панель сбросила трафик в 03:20, а бот узнал об этом через 14 и 24 часа.
+
+    Теперь проход сверки сам смотрит расход в панели: в боте ещё старые 50 ГБ, а
+    в панели уже 0,1 ГБ — значит, сброс, и grace закрывается этим же проходом.
+    """
+    lab.panel.used = GIB // 10
+
+    result = await lab.runtime._process_open(42, drain=False, force_restore=False)
+
+    assert result.paid == 1
+    assert await _state(lab.maker) == ('active', 'completed')
+    assert lab.panel.applied[0].traffic_limit_bytes == 50 * GIB
+    async with lab.maker() as db:
+        used = (await db.execute(select(Subscription.traffic_used_gb).where(Subscription.id == 42))).scalar_one()
+    assert used == pytest.approx(0.1, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_panel_just_waits_for_the_next_pass(lab, monkeypatch):
+    async def _boom(self, remnawave_id):
+        raise RuntimeError('panel is down')
+
+    monkeypatch.setattr(lab.rt.RemnawaveGracePanelGateway, 'read_snapshot', _boom)
+
+    result = await lab.runtime._process_open(42, drain=False, force_restore=False)
+
+    assert result.paid == 0
+    assert (await _state(lab.maker))[0] == 'limited'
+
+
+@pytest.mark.asyncio
+async def test_one_pass_shares_one_panel_gateway(lab):
+    """Проверка сброса и сверка ходят в панель через один шлюз — и одно запомненное чтение."""
+    result = await lab.runtime._process_open(42, drain=False, force_restore=False)
+
+    assert result.paid == 0
+    assert lab.panel.instances == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_reads_the_panel_once_until_it_writes(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.services import remnawave_service as rs
+    from app.services.grace_access_runtime import RemnawaveGracePanelGateway
+
+    calls = []
+    panel_user = SimpleNamespace(
+        id=PANEL_ID,
+        status='ACTIVE',
+        expire_at=GRACE_UNTIL,
+        traffic_limit_bytes=51 * GIB,
+        used_traffic_bytes=GIB,
+        active_internal_squads=[{'uuid': GRACE_SQUAD}],
+        external_squad_uuid=None,
+        user_traffic=object(),
+        last_traffic_reset_at=None,
+        traffic_limit_strategy='MONTH',
+    )
+
+    class _Api:
+        async def get_user_by_id(self, user_id):
+            calls.append(user_id)
+            return panel_user
+
+    @asynccontextmanager
+    async def _client():
+        yield _Api()
+
+    monkeypatch.setattr(rs.remnawave_service, 'get_api_client', _client)
+
+    cached = RemnawaveGracePanelGateway(cache_reads=True)
+    first = await cached.read_snapshot(PANEL_ID)
+    second = await cached.read_snapshot(PANEL_ID)
+    assert first == second and first.traffic_limit_strategy == 'MONTH'
+    assert calls == [PANEL_ID], 'второе чтение — из памяти'
+
+    cached._forget_reads()  # так делает каждая запись в панель
+    await cached.read_snapshot(PANEL_ID)
+    assert calls == [PANEL_ID, PANEL_ID], 'после записи — снова свежее чтение'
+
+    plain = RemnawaveGracePanelGateway()
+    await plain.read_snapshot(PANEL_ID)
+    await plain.read_snapshot(PANEL_ID)
+    assert len(calls) == 4, 'без cache_reads всё как раньше'

@@ -1220,7 +1220,7 @@ async def test_a_fresh_grant_is_announced_after_the_commit(runtime_lab, monkeypa
     monkeypatch.setattr(
         runtime_lab.rt,
         '_build_core',
-        lambda db, subscription_id=None: _StubCore(start=GraceStartResult(GraceStartDecision.STARTED, session)),
+        lambda db, subscription_id=None, **_: _StubCore(start=GraceStartResult(GraceStartDecision.STARTED, session)),
     )
 
     await runtime_lab.runtime.consider_candidate(42, GraceReason.EXPIRED, source='worker')
@@ -1235,7 +1235,7 @@ async def test_a_repeated_incident_is_not_announced_again(runtime_lab, monkeypat
     monkeypatch.setattr(
         runtime_lab.rt,
         '_build_core',
-        lambda db, subscription_id=None: _StubCore(start=GraceStartResult(GraceStartDecision.ALREADY_GRANTED, None)),
+        lambda db, subscription_id=None, **_: _StubCore(start=GraceStartResult(GraceStartDecision.ALREADY_GRANTED, None)),
     )
 
     await runtime_lab.runtime.consider_candidate(42, GraceReason.EXPIRED, source='webhook')
@@ -1261,7 +1261,7 @@ async def test_reconciliation_outcomes_are_announced(runtime_lab, monkeypatch, o
     monkeypatch.setattr(
         runtime_lab.rt,
         '_build_core',
-        lambda db, subscription_id=None: _StubCore(reconcile=GraceReconcileResult(inspected=1, **outcome)),
+        lambda db, subscription_id=None, **_: _StubCore(reconcile=GraceReconcileResult(inspected=1, **outcome)),
     )
 
     await runtime_lab.runtime._process_open(42, drain=False, force_restore=False)
@@ -1276,7 +1276,7 @@ async def test_an_unchanged_reconciliation_is_silent(runtime_lab, monkeypatch):
     monkeypatch.setattr(
         runtime_lab.rt,
         '_build_core',
-        lambda db, subscription_id=None: _StubCore(reconcile=GraceReconcileResult(inspected=1, unchanged=1)),
+        lambda db, subscription_id=None, **_: _StubCore(reconcile=GraceReconcileResult(inspected=1, unchanged=1)),
     )
 
     await runtime_lab.runtime._process_open(42, drain=False, force_restore=False)

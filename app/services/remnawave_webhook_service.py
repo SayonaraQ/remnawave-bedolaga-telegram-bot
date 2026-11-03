@@ -151,6 +151,17 @@ _ADMIN_TORRENT_BLOCKER_EVENTS: dict[str, str] = {
 _ADMIN_NODE_CONNECTION_EVENTS = frozenset({'node.connection_lost', 'node.connection_restored'})
 
 
+def _strip_grace_speaks_for_itself(result: Any) -> bool:
+    """Выдан (или уже идёт) grace «без белых списков», и человеку о нём сообщит сам grace."""
+    if not settings.GRACE_ACCESS_NOTIFY_USER or result is None:
+        return False
+    session = getattr(result, 'session', None)
+    overlay = getattr(session, 'overlay', None)
+    if not getattr(overlay, 'strip_squads', False):
+        return False
+    return getattr(getattr(result, 'decision', None), 'value', None) in {'started', 'retried', 'already_active'}
+
+
 class RemnaWaveWebhookService:
     """Processes incoming webhooks from RemnaWave backend."""
 
@@ -1320,11 +1331,15 @@ class RemnaWaveWebhookService:
         else:
             await db.commit()
 
-        await grace_access_runtime.consider_candidate(
+        grace_result = await grace_access_runtime.consider_candidate(
             subscription.id,
             GraceReason.LIMITED,
             source='webhook',
         )
+        if _strip_grace_speaks_for_itself(grace_result):
+            # Режим «без белых списков»: человеку уже пишет grace — что отключены только
+            # белые списки. «Достигнут лимит трафика» рядом с ним читалось бы как «VPN всё».
+            return
 
         await self._notify_user(
             user, 'WEBHOOK_SUB_LIMITED', reply_markup=self._get_traffic_keyboard(user), subscription=subscription
@@ -1858,9 +1873,16 @@ class RemnaWaveWebhookService:
         # Sanitize to numeric value only (prevent format string injection)
         percent_str = re.sub(r'[^\d.]', '', str(percent)) or '80'
 
+        strip_mode = settings.GRACE_ACCESS_LIMITED_STRATEGY == 'strip_squads'
+        if strip_mode and subscription is not None and getattr(subscription, 'grace_session_open', False):
+            # Пока белые списки сняты, лимит в панели — «расход + запас», и панель
+            # может отчитаться о пороге сразу после выдачи. Человек уже знает главное.
+            logger.debug('Порог трафика во время grace без белых списков не шлём', subscription_id=subscription.id)
+            return
+
         await self._notify_user(
             user,
-            'WEBHOOK_SUB_BANDWIDTH_THRESHOLD',
+            'WEBHOOK_SUB_BANDWIDTH_THRESHOLD_WHITELIST' if strip_mode else 'WEBHOOK_SUB_BANDWIDTH_THRESHOLD',
             reply_markup=self._get_traffic_keyboard(user),
             format_kwargs={'percent': percent_str},
             subscription=subscription,

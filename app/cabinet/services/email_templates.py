@@ -7,7 +7,7 @@ Supports multiple languages: ru, en, zh, ua, fa
 import html
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, ClassVar
 
 from app.config import settings
 from app.services.notification_types import NotificationType
@@ -886,6 +886,60 @@ class EmailNotificationTemplates:
         },
     }
 
+    #: Режим «без белых списков» (GRACE_ACCESS_LIMITED_STRATEGY=strip_squads): выдача и
+    #: возврат по сбросу трафика. ``{reset}`` — « до 01.12» или пусто.
+    GRACE_STRIP_EMAIL_COPY: ClassVar[dict[str, dict[str, tuple[str, str]]]] = {
+        'strip': {
+            'ru': (
+                'Трафик для белых списков израсходован',
+                '<p>Локации белых списков по подписке{tariff} недоступны{reset}. Остальные локации работают как обычно: если VPN не подключается, выберите другую локацию.</p><p>Чтобы вернуть белые списки сразу, докупите трафик в личном кабинете.</p>',
+            ),
+            'en': (
+                'Whitelist traffic is used up',
+                '<p>Whitelist locations of subscription{tariff} are unavailable{reset}. All other locations work as usual: if the VPN does not connect, pick another location.</p><p>To get them back right away, buy more traffic in your dashboard.</p>',
+            ),
+            'zh': (
+                '白名单流量已用完',
+                '<p>订阅{tariff}的白名单节点暂不可用{reset}。其他节点照常可用：如果 VPN 无法连接，请选择其他节点。</p><p>如需立即恢复白名单，请在个人中心购买流量。</p>',
+            ),
+            'ua': (
+                'Трафік для білих списків вичерпано',
+                '<p>Локації білих списків за підпискою{tariff} недоступні{reset}. Решта локацій працює як звичайно: якщо VPN не підключається, оберіть іншу локацію.</p><p>Щоб повернути білі списки одразу, докупіть трафік в особистому кабінеті.</p>',
+            ),
+        },
+        'strip_restored': {
+            'ru': (
+                'Белые списки снова доступны',
+                '<p>Трафик по подписке{tariff} обновился, локации белых списков снова работают.</p><p>Если их нет в приложении, обновите подписку.</p>',
+            ),
+            'en': (
+                'Whitelist locations are back',
+                '<p>Traffic of subscription{tariff} has been renewed, whitelist locations work again.</p><p>If they are missing in the app, update the subscription.</p>',
+            ),
+            'zh': (
+                '白名单节点已恢复',
+                '<p>订阅{tariff}的流量已重置，白名单节点重新可用。</p><p>如果应用中没有显示，请更新订阅。</p>',
+            ),
+            'ua': (
+                'Білі списки знову доступні',
+                '<p>Трафік за підпискою{tariff} оновився, локації білих списків знову працюють.</p><p>Якщо їх немає в застосунку, оновіть підписку.</p>',
+            ),
+        },
+    }
+
+    def _grace_strip_email(self, event: str, language: str, context: dict[str, Any]) -> dict[str, str]:
+        lang = language if language in ('ru', 'en', 'zh', 'ua') else 'ru'
+        subject, body = self.GRACE_STRIP_EMAIL_COPY[event][lang]
+        tariff_name = str(context.get('tariff_name') or '').strip()
+        values = {
+            'tariff': f' «{html.escape(tariff_name)}»' if tariff_name else '',
+            'reset': html.escape(str(context.get('reset_phrase') or '')),
+        }
+        for key, value in values.items():
+            body = body.replace('{' + key + '}', value)
+        content = f'<h2>{subject}</h2><div class="highlight">{body}</div>{self._get_cabinet_button(language)}'
+        return {'subject': subject, 'body_html': self._get_base_template(content, language)}
+
     def _grace_access_email(self, event: str, language: str, context: dict[str, Any]) -> dict[str, str]:
         lang = language if language in ('ru', 'en', 'zh', 'ua') else 'ru'
         subject, body, why_by_reason = self.GRACE_EMAIL_COPY[event][lang]
@@ -905,9 +959,13 @@ class EmailNotificationTemplates:
         return {'subject': subject, 'body_html': self._get_base_template(content, language)}
 
     def _grace_access_granted_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        if context.get('strip'):
+            return self._grace_strip_email('strip', language, context)
         return self._grace_access_email('granted', language, context)
 
     def _grace_access_ended_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        if context.get('strip_restored'):
+            return self._grace_strip_email('strip_restored', language, context)
         return self._grace_access_email('ended', language, context)
 
     def _winback_expired_1d_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:

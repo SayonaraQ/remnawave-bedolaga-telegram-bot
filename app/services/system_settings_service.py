@@ -836,6 +836,34 @@ class BotConfigurationService:
             'example': '3fa85f64-5717-4562-b3fc-2c963f66afa6',
             'warning': 'Обязателен при режиме true. Пустое или некорректное значение отключает grace при старте.',
         },
+        'GRACE_ACCESS_LIMITED_STRATEGY': {
+            'description': (
+                'Что делать при исчерпании трафика: squad — перевести в сквад grace на срок grace; '
+                'strip_squads — снять только сквады из GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS '
+                '(например, белые списки) до докупки трафика, сброса или конца подписки.'
+            ),
+            'format': 'squad или strip_squads.',
+            'example': 'squad',
+            'warning': (
+                'strip_squads подходит, когда трафик считается только на снимаемых сквадах: остальные '
+                'остаются работать без ограничения. Без списка сквадов grace при старте выключится.'
+            ),
+            'dependencies': 'GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS, GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB',
+        },
+        'GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS': {
+            'description': 'Сквады, которые снимаются при исчерпании трафика в режиме strip_squads.',
+            'format': 'UUID сквадов через запятую.',
+            'example': '0ae317c4-1c3e-4c16-9158-88a6120f6278',
+            'warning': 'Обязателен при стратегии strip_squads.',
+        },
+        'GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB': {
+            'description': (
+                'Запас лимита на время режима strip_squads: в панели лимит = расход + запас. '
+                'Страхует, если снятый сквад вернут мимо бота.'
+            ),
+            'format': 'Целое число мегабайт.',
+            'example': '100',
+        },
         'GRACE_ACCESS_EXTERNAL_SQUAD_UUID': {
             'description': 'Что делать с внешним сквадом пользователя на время grace-доступа.',
             'format': 'Пусто — отцепить, keep — оставить как есть, либо UUID аварийного сквада.',
