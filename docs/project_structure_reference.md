@@ -5685,7 +5685,7 @@
   Функции: нет
 - `tests/services/user_reminders/test_cabinet.py` — Python-модуль
   Классы: нет
-  Функции: `test_cards_follow_conditions_channels_and_order`, `test_dismissed_card_is_gone_and_dismiss_is_idempotent`, `test_dismiss_unknown_or_not_for_cabinet_is_false`, `test_broken_conditions_do_not_break_the_page`, `test_broken_texts_do_not_break_the_page`, `test_dismiss_returns_false_when_state_cannot_be_created` — get_or_create_state вернёт None при FK-гонке (напоминание/юзер удалены между
+  Функции: `test_cards_follow_conditions_channels_and_order`, `test_dismissed_card_is_gone_and_dismiss_is_idempotent`, `test_dismissed_card_returns_after_repeat_window` — Крестик прячет карточку на repeat_every_days, отсчёт — от последнего закрытия., `test_link_cards_never_reach_people_with_telegram_and_email` — «Подключите Telegram» — всем без Telegram, «Добавьте почту» — только Telegram;, `test_closed_card_stays_gone_after_second_method_is_linked` — Закрыл карточку, потом привязал второй способ входа: окно повтора истекает, а карточка, `test_dismiss_unknown_or_not_for_cabinet_is_false`, `test_broken_conditions_do_not_break_the_page`, `test_broken_texts_do_not_break_the_page`, `test_dismiss_returns_false_when_state_cannot_be_created` — get_or_create_state вернёт None при FK-гонке (напоминание/юзер удалены между
 - `tests/services/user_reminders/test_conditions.py` — Python-модуль
   Классы: нет
   Функции: `test_sql_and_python_agree`, `test_python_auth_matches_compute_auth_methods`, `test_low_balance_threshold_is_the_broadcast_one`, `test_invalid_conditions_are_rejected`, `test_auth_condition_does_not_coalesce_numeric_columns_with_text`
