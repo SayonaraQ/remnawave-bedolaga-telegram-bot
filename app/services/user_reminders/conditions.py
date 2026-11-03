@@ -24,7 +24,9 @@ LOW_BALANCE_THRESHOLD_KOPEKS = 10_000
 _EXCLUDED_STATUSES = (UserStatus.DELETED.value, UserStatus.BLOCKED.value)
 _ALIVE = tuple(ALIVE_SUBSCRIPTION_STATUSES)
 
-AuthCondition = Literal['telegram_only', 'email_only', 'single_method']
+# no_telegram — Telegram не привязан, но войти есть чем (почта с паролем или соцсеть).
+# Такой человек, открыв бота простым /start, получит второй, отдельный аккаунт.
+AuthCondition = Literal['telegram_only', 'email_only', 'single_method', 'no_telegram']
 SubscriptionSegment = Literal['active', 'trial', 'expiring', 'expired', 'none', 'low_balance', 'tariff']
 
 
@@ -78,6 +80,8 @@ def _auth_sql(auth: AuthCondition) -> ColumnElement[bool]:
     telegram = User.telegram_id.is_not(None)
     email = and_(_filled(User.email), _filled(User.password_hash))
     oauth = [_filled(getattr(User, column)) for column in OAUTH_PROVIDER_COLUMNS.values()]
+    if auth == 'no_telegram':
+        return and_(not_(telegram), or_(email, *oauth))
     count = sum((case((flag, 1), else_=0) for flag in (telegram, email, *oauth)), literal(0))
     single = count == 1
     if auth == 'telegram_only':
@@ -149,6 +153,8 @@ def _is_alive(subscription, now: datetime) -> bool:
 
 def _auth_matches(user, auth: AuthCondition) -> bool:
     methods = compute_auth_methods(user)
+    if auth == 'no_telegram':
+        return bool(methods) and 'telegram' not in methods
     if len(methods) != 1:
         return False
     if auth == 'telegram_only':

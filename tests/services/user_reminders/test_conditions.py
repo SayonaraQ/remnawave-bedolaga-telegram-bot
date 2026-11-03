@@ -79,6 +79,20 @@ CASES = {
         [],
         {2},
     ),
+    'no_telegram': (
+        {'auth': 'no_telegram'},
+        [
+            _user(1, telegram_id=11),
+            _user(2, email='b@x', password_hash='h'),
+            _user(3, google_id='g'),
+            _user(4, yandex_id='y', vk_id=77),
+            _user(5, email='e@x', password_hash=None),
+            _user(6),
+            _user(7, telegram_id=17, google_id='g7'),
+        ],
+        [],
+        {2, 3, 4},
+    ),
     'email_without_password_is_not_a_method': (
         {'auth': 'telegram_only'},
         [_user(1, telegram_id=11, email='a@x', password_hash=None)],

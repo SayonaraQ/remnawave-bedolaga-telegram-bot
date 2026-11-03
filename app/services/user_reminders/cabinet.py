@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from pydantic import ValidationError
@@ -23,20 +23,23 @@ async def active_cards_for_user(db: AsyncSession, user, *, lang: str | None, now
     reminders = await list_active_reminders(db, CHANNELS_CABINET)
     if not reminders:
         return []
-    dismissed = set(
-        (
-            await db.execute(
-                select(UserReminderState.reminder_id).where(
-                    UserReminderState.user_id == user.id, UserReminderState.dismissed_at.is_not(None)
-                )
-            )
-        ).scalars()
+    # Закрытая карточка возвращается через repeat_every_days после последнего закрытия.
+    # Перестаёт показываться совсем, только когда человек выпадает из условий.
+    rows = await db.execute(
+        select(UserReminderState.reminder_id, UserReminderState.dismissed_at).where(
+            UserReminderState.user_id == user.id, UserReminderState.dismissed_at.is_not(None)
+        )
     )
+    dismissed = {reminder_id: dismissed_at for reminder_id, dismissed_at in rows.all()}
     subscriptions = list((await db.execute(select(Subscription).where(Subscription.user_id == user.id))).scalars())
     cards: list[dict] = []
     for reminder in reminders:
-        if reminder.id in dismissed:
-            continue
+        dismissed_at = dismissed.get(reminder.id)
+        if dismissed_at is not None:
+            if dismissed_at.tzinfo is None:
+                dismissed_at = dismissed_at.replace(tzinfo=UTC)
+            if now - dismissed_at < timedelta(days=reminder.repeat_every_days):
+                continue
         try:
             conditions = parse_conditions(reminder.conditions)
         except ValidationError as error:
@@ -60,7 +63,7 @@ async def dismiss_reminder(db: AsyncSession, user, reminder_id: int, *, now: dat
     if state is None:
         # Пользователь/напоминание удалены между проверкой и вставкой — закрывать нечего.
         return False
-    if state.dismissed_at is None:
-        state.dismissed_at = now or datetime.now(UTC)
+    # Каждое закрытие заново откладывает показ: окно считается от последнего крестика.
+    state.dismissed_at = now or datetime.now(UTC)
     await db.commit()
     return True

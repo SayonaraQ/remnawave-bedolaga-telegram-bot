@@ -21,7 +21,7 @@ pytestmark = pytest.mark.postgres
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('auth', ['telegram_only', 'email_only', 'single_method'])
+@pytest.mark.parametrize('auth', ['telegram_only', 'email_only', 'single_method', 'no_telegram'])
 async def test_auth_condition_runs_on_postgres(postgres_database, auth):
     async with postgres_session(postgres_database, (User.__table__, Subscription.__table__)) as db:
         db.add_all(
@@ -39,5 +39,6 @@ async def test_auth_condition_runs_on_postgres(postgres_database, auth):
         'telegram_only': {'tg_only'},
         'email_only': set(),
         'single_method': {'vk_only', 'tg_only'},
+        'no_telegram': {'vk_only'},
     }[auth]
     assert usernames == expected
