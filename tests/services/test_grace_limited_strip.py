@@ -262,16 +262,28 @@ async def test_admin_squad_change_is_a_conflict():
 
 
 @pytest.mark.asyncio
-async def test_subscription_end_restores_the_limited_snapshot_a_minute_early():
-    _, service, store, panel, _, clock = await started()
+async def test_subscription_end_waits_for_the_real_end_and_is_a_timeout_not_a_conflict():
+    """Прод 03.11: панель гасит аккаунт в дату оверлея (конец минус минута), и откат
+    к LIMITED-снимку с будущей датой на истёкший аккаунт не ложился; а после конца
+    сверка видела истёкшую подписку и закрывала сессию конфликтом — админам шло
+    «конфликт» на каждое окончание подписки. Теперь между датой оверлея и концом
+    сессия ждёт, а после конца закрывается таймаутом с откатом к истёкшему канону."""
+    _, service, store, panel, billing_gateway, clock = await started()
 
     clock.current = END - timedelta(seconds=30)
+    await service.reconcile()
+    assert store.only_session().state is GraceSessionState.ACTIVE
+    assert panel.restored_snapshots == []
+
+    # Конец прошёл: бот видит подписку истёкшей с той же датой.
+    clock.current = END + timedelta(seconds=40)
+    billing_gateway.state = synced(limited_billing(status='expired'), store)
     await service.reconcile()
 
     session = store.only_session()
     assert session.completion_reason is GraceCompletionReason.TIMEOUT
+    assert panel.applied_billing == [], 'канон «истекла» — штатный откат, не конфликт'
     assert panel.restored_snapshots[-1][1].squad_uuids == (EU_SQUAD, PREMIUM_SQUAD, WL_SQUAD)
-    assert panel.restored_snapshots[-1][1].status == 'LIMITED'
 
 
 @pytest.mark.asyncio

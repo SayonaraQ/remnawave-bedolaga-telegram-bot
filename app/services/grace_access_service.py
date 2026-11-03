@@ -737,6 +737,21 @@ class GraceAccessService:
             if followed is not None:
                 return followed
 
+        if session.overlay.strip_squads and session.state is GraceSessionState.ACTIVE and not force_restore:
+            now = _as_utc(self._clock())
+            if strip_subscription_ended(session, billing, now=now):
+                # Подписка просто кончилась: штатный конец режима, не конфликт. Снимок —
+                # LIMITED с настоящей (уже прошедшей) датой, откат строит из него канон
+                # истёкшей подписки: сквады и лимит, EXPIRED панель выводит сама.
+                action, _ = await self._restore_and_complete(session, GraceCompletionReason.TIMEOUT)
+                return action
+            before_end = session.billing_before.end_at
+            if before_end is not None and now >= _as_utc(session.grace_until) and now < _as_utc(before_end):
+                # Минута между датой оверлея и настоящим концом: панель уже погасила
+                # аккаунт по дате оверлея, откат к LIMITED с будущей датой на него не
+                # ляжет. Ждём настоящего конца.
+                return 'unchanged'
+
         # Эхо оверлея в биллинге — не смена инцидента: дата грейса попала в бота
         # импортом из панели. Не отправляем её в панель «каноническим» состоянием
         # и не закрываем грейс — он доработает до конца и восстановит снимок.
@@ -1211,6 +1226,26 @@ def strip_session_follows_billing(session: GraceAccessSession, current: GraceBil
     if _as_utc(current.end_at) - STRIP_OVERLAY_DATE_OFFSET - _as_utc(now) < STRIP_MIN_REMAINING:
         return False
     return _strip_incident_holds(current) and _strip_billing_matches(session, current, ignore_end=True)
+
+
+def strip_subscription_ended(session: GraceAccessSession, current: GraceBillingState, *, now: datetime) -> bool:
+    """Режим «без белых списков» дожил до конца подписки, и её никто не трогал.
+
+    Дата та же, что запомнена (её не продлили и не сдвинули), и она прошла; статус
+    бот может уже считать истёкшим. Это штатный конец, а не правка извне.
+    """
+    if not session.overlay.strip_squads:
+        return False
+    before_end = session.billing_before.end_at
+    if before_end is None or current.end_at is None or _as_utc(before_end) > _as_utc(now):
+        return False
+    if not _datetimes_equal(current.end_at, before_end):
+        return False
+    return (
+        _normalize_status(current.status) in {'limited', 'active', 'expired'}
+        and _normalize_status(current.user_status) == 'active'
+        and _strip_billing_matches(session, current, ignore_end=True)
+    )
 
 
 def _strip_incident_holds(current: GraceBillingState) -> bool:
