@@ -36,6 +36,9 @@ _GIB = 1024**3
 #: О продлении человек уже получает своё уведомление; отзыв и конфликт — служебные
 #: исходы, человеку о них сказать нечего. Ему сообщаем только «доступ закрылся».
 _USER_ENDED_REASONS = frozenset({'timeout', 'drained'})
+#: «Без белых списков»: выдачу и обычное закрытие (докупка, сброс) админам не шлём —
+#: действия они не требуют. Конфликт, отзыв, слив и конец подписки — шлём.
+_STRIP_ADMIN_ENDED_REASONS = frozenset({'timeout', 'drained', 'revoked', 'conflict'})
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,9 @@ class _GraceDetails:
     quota_gb: float
     completion_reason: str | None
     last_error: str | None
+    strip: bool = False
+    traffic_limit_strategy: str | None = None
+    limit_before_bytes: int = 0
 
 
 async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent) -> None:
@@ -83,6 +89,23 @@ async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent
         logger.exception('Grace event could not be loaded', subscription_id=subscription_id, grace_event=event)
         return
 
+    if details.strip:
+        if (
+            settings.GRACE_ACCESS_NOTIFY_ADMINS
+            and event == 'ended'
+            and (details.completion_reason in _STRIP_ADMIN_ENDED_REASONS)
+        ):
+            try:
+                await _notify_admins(bot, event, subscription, details)
+            except Exception:
+                logger.exception('Grace admin notification failed', subscription_id=subscription_id, grace_event=event)
+        if settings.GRACE_ACCESS_NOTIFY_USER:
+            try:
+                await _notify_user_strip(bot, event, subscription, details)
+            except Exception:
+                logger.exception('Grace user notification failed', subscription_id=subscription_id, grace_event=event)
+        return
+
     if settings.GRACE_ACCESS_NOTIFY_ADMINS:
         try:
             await _notify_admins(bot, event, subscription, details)
@@ -98,6 +121,7 @@ async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent
 def _details(row: GraceAccessSessionModel) -> _GraceDetails:
     overlay = row.overlay if isinstance(row.overlay, dict) else {}
     before = row.panel_before if isinstance(row.panel_before, dict) else {}
+    billing_before = row.billing_before if isinstance(row.billing_before, dict) else {}
     limit = int(overlay.get('traffic_limit_bytes') or 0)
     used = int(before.get('used_traffic_bytes') or 0)
     quota_gb = max(0.0, (limit - used) / _GIB)
@@ -115,6 +139,9 @@ def _details(row: GraceAccessSessionModel) -> _GraceDetails:
         quota_gb=round(quota_gb, 2),
         completion_reason=str(row.completion_reason) if row.completion_reason else None,
         last_error=str(row.last_error) if row.last_error else None,
+        strip=bool(overlay.get('strip_squads')),
+        traffic_limit_strategy=(str(before.get('traffic_limit_strategy') or '').upper() or None),
+        limit_before_bytes=int(billing_before.get('traffic_limit_bytes') or 0),
     )
 
 
@@ -195,6 +222,94 @@ async def _notify_user(bot: Any, event: GraceEvent, subscription: Subscription, 
         telegram_message=message,
         telegram_markup=InlineKeyboardMarkup(inline_keyboard=[[renew], [close]]),
     )
+
+
+async def _notify_user_strip(bot: Any, event: GraceEvent, subscription: Subscription, details: _GraceDetails) -> None:
+    """Сообщения режима «без белых списков».
+
+    Выдача — что отключено, когда вернётся само и как вернуть сразу. Возврат по
+    сбросу — что белые списки снова есть. О докупке человек уже получил «трафик
+    добавлен», а после конца подписки придёт обычный grace по истечению, поэтому
+    там молчим.
+    """
+    from app.localization.texts import get_texts
+    from app.services.notification_delivery_service import notification_delivery_service
+    from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+
+    user = subscription.user
+    texts = get_texts(user.language)
+    tariff = subscription.tariff
+    tariff_name = str(getattr(tariff, 'name', '') or '') if tariff else ''
+    tariff_label = (
+        f' «{html.escape(tariff_name, quote=False)}»' if settings.is_multi_tariff_enabled() and tariff_name else ''
+    )
+    close = InlineKeyboardButton(text=texts.get('WEBHOOK_CLOSE_BUTTON', '✖️ Закрыть'), callback_data='webhook:close')
+
+    if event == 'granted':
+        text_key = 'GRACE_ACCESS_GRANTED_STRIP'
+        notification_type = NotificationType.GRACE_ACCESS_GRANTED
+        reset_date = next_traffic_reset_label(details.traffic_limit_strategy)
+        reset_phrase = (
+            texts.get('GRACE_ACCESS_STRIP_RESET_PHRASE', ' до {date}').format(date=reset_date) if reset_date else ''
+        )
+        buy = build_miniapp_or_callback_button(
+            text=texts.get('BUY_TRAFFIC_BUTTON', 'Buy traffic'), callback_data='buy_traffic'
+        )
+        markup = InlineKeyboardMarkup(inline_keyboard=[[buy], [close]])
+        email_context = {
+            'text_key': text_key,
+            'strip': True,
+            'reset_phrase': reset_phrase,
+            'reason': details.reason,
+            'tariff_name': tariff_name,
+        }
+        context = {'tariff_label': tariff_label, 'reset_phrase': reset_phrase}
+    else:
+        if details.completion_reason != 'paid' or not _traffic_was_reset(subscription, details):
+            return
+        text_key = 'GRACE_ACCESS_STRIP_RESTORED'
+        notification_type = NotificationType.GRACE_ACCESS_ENDED
+        markup = InlineKeyboardMarkup(inline_keyboard=[[close]])
+        email_context = {'text_key': text_key, 'strip_restored': True, 'tariff_name': tariff_name}
+        context = {'tariff_label': tariff_label}
+
+    template = texts.get(text_key)
+    if not template:
+        logger.warning('Missing locale key for grace notification', text_key=text_key, language=user.language)
+        return
+    await notification_delivery_service.send_notification(
+        user=user,
+        notification_type=notification_type,
+        context=email_context,
+        bot=bot,
+        telegram_message=template.format(**context),
+        telegram_markup=markup,
+    )
+
+
+def _traffic_was_reset(subscription: Subscription, details: _GraceDetails) -> bool:
+    """Закрылось сбросом, а не докупкой: лимит тарифа тот же, что был при выдаче."""
+    limit_now = max(0, int(subscription.traffic_limit_gb or 0)) * _GIB
+    return details.limit_before_bytes > 0 and limit_now == details.limit_before_bytes
+
+
+def next_traffic_reset_label(strategy: str | None, *, now: datetime | None = None) -> str | None:
+    """Когда трафик сбросится сам: «01.12» для MONTH, иначе ``None`` — дату не называем.
+
+    Панель сбрасывает MONTH первого числа (у нас около 03:20 МСК). Остальные
+    стратегии («скользящий месяц», неделя, день) зависят от даты, которой здесь
+    нет, а NO_RESET не сбрасывает вовсе.
+    """
+    if (strategy or '').upper() != 'MONTH':
+        return None
+    from app.utils.timezone import get_local_timezone
+
+    local_now = (now or datetime.now(UTC)).astimezone(get_local_timezone())
+    if local_now.month == 12:
+        first = local_now.replace(year=local_now.year + 1, month=1, day=1)
+    else:
+        first = local_now.replace(month=local_now.month + 1, day=1)
+    return first.strftime('%d.%m')
 
 
 def grace_allowed_services() -> str:

@@ -90,6 +90,25 @@ class GracePanelTransitionConflict(Exception):
     """Signal that a derived-status transition hit an unrelated panel state."""
 
 
+class GraceLimitedStrategy(StrEnum):
+    """Что делать с подпиской, упёршейся в лимит трафика (``GRACE_ACCESS_LIMITED_STRATEGY``)."""
+
+    #: Перевести в сквад grace (только Telegram) на ``GRACE_ACCESS_DURATION_HOURS``.
+    SQUAD = 'squad'
+    #: Снять только сквады из ``GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS`` (белые списки) до
+    #: докупки трафика, сброса или конца подписки; остальное работает как обычно.
+    STRIP_SQUADS = 'strip_squads'
+
+
+#: Дата оверлея «без белых списков» — настоящий конец подписки минус минута. Дата
+#: оверлея обязана быть уникальной: на ней держится вся защита от эха (импорт,
+#: мониторинг, вебхуки, починка при продлении), а конец подписки и сам по себе
+#: стоит в биллинге. Минута — цена этой уникальности.
+STRIP_OVERLAY_DATE_OFFSET = timedelta(seconds=60)
+#: Меньше — режим «без белых списков» не выдаётся, работает обычный grace.
+STRIP_MIN_REMAINING = timedelta(minutes=10)
+
+
 class GraceStartDecision(StrEnum):
     STARTED = 'started'
     RETRIED = 'retried'
@@ -115,8 +134,16 @@ class GraceAccessPolicy:
     reconcile_batch_size: int = 200
     external_squad_uuid: str | None = None
     reset_traffic_on_start: bool = False
+    limited_strategy: str = GraceLimitedStrategy.SQUAD.value
+    strip_squad_uuids: frozenset[str] = frozenset()
+    strip_buffer_bytes: int = 100 * 1024**2
 
     def __post_init__(self) -> None:
+        GraceLimitedStrategy(self.limited_strategy)
+        if self.limited_strategy == GraceLimitedStrategy.STRIP_SQUADS.value and not self.strip_squad_uuids:
+            raise ValueError('GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS is required for the strip_squads strategy')
+        if self.strip_buffer_bytes < 0:
+            raise ValueError('Grace strip buffer must not be negative')
         if self.duration <= timedelta(0):
             raise ValueError('Grace duration must be positive')
         if self.traffic_bytes < 0:
@@ -169,6 +196,9 @@ class GracePanelSnapshot:
     external_squad_uuid: str | None = None
     traffic_is_known: bool = True
     last_traffic_reset_at: datetime | None = None
+    #: Стратегия сброса трафика в панели (MONTH, NO_RESET, ...): по ней клиенту называют
+    #: дату, когда белые списки вернутся сами. Только для сообщения, не для решений.
+    traffic_limit_strategy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +212,9 @@ class GracePanelOverlay:
     external_squad_uuid: str | None = None
     # Счётчик расхода обнуляется при выдаче, а лимит равен самой квоте grace.
     reset_used_traffic: bool = False
+    #: Режим «без белых списков»: сняты только сквады из настройки, дата — конец
+    #: подписки минус минута, восстановление — только трафиком.
+    strip_squads: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +393,7 @@ class GraceAccessService:
             self._policy,
             now=now,
             reset_used_traffic=should_reset_used_traffic(billing, panel_snapshot, reason, self._policy),
+            billing_end_at=billing.end_at,
         )
         pending_session = GraceAccessSession(
             id=str(uuid4()),
@@ -563,11 +597,7 @@ class GraceAccessService:
             action = await self._restore_and_complete(session, completion_reason)
             return action[1]
 
-        if (
-            now >= _as_utc(session.grace_until)
-            or not billing_incident_is_eligible(latest_billing, session.reason)
-            or not billing_still_matches_session(session, latest_billing)
-        ):
+        if now >= _as_utc(session.grace_until) or not session_billing_holds(session, latest_billing):
             action = await self._restore_and_complete(session, GraceCompletionReason.CONFLICT)
             return action[1]
 
@@ -648,9 +678,7 @@ class GraceAccessService:
                 return await self._complete(session, GraceCompletionReason.REVOKED)
             _, completed = await self._restore_and_complete(session, GraceCompletionReason.REVOKED)
             return completed
-        if not billing_incident_is_eligible(latest_billing, session.reason) or not billing_still_matches_session(
-            session, latest_billing
-        ):
+        if not session_billing_holds(session, latest_billing):
             _, completed = await self._restore_and_complete(session, GraceCompletionReason.CONFLICT)
             return completed
 
@@ -697,6 +725,11 @@ class GraceAccessService:
             action, _ = await self._restore_and_complete(session, GraceCompletionReason.REVOKED)
             return action
 
+        if session.overlay.strip_squads and session.state is GraceSessionState.ACTIVE and not force_restore:
+            followed = await self._follow_strip_date(session, billing)
+            if followed is not None:
+                return followed
+
         # Эхо оверлея в биллинге — не смена инцидента: дата грейса попала в бота
         # импортом из панели. Не отправляем её в панель «каноническим» состоянием
         # и не закрываем грейс — он доработает до конца и восстановит снимок.
@@ -714,10 +747,7 @@ class GraceAccessService:
         # user by compare-and-set and leave unrelated panel changes untouched.
         # ``session.remnawave_id`` is always a positive int, so a subscription
         # that lost its panel link (``None``) can never match it by accident.
-        if not billing_echoes_overlay(session, billing) and (
-            not billing_incident_is_eligible(billing, session.reason)
-            or not billing_still_matches_session(session, billing)
-        ):
+        if not billing_echoes_overlay(session, billing) and not session_billing_holds(session, billing):
             if billing.remnawave_id == session.remnawave_id:
                 await self._panel.apply_billing_state(
                     billing,
@@ -779,6 +809,55 @@ class GraceAccessService:
         completion_reason = GraceCompletionReason.DRAINED if force_restore else GraceCompletionReason.TIMEOUT
         action, _ = await self._restore_and_complete(session, completion_reason)
         return action
+
+    async def _follow_strip_date(
+        self,
+        session: GraceAccessSession,
+        billing: GraceBillingState,
+    ) -> str | None:
+        """Продление днями (или сдвиг даты админом) в режиме «без белых списков».
+
+        Трафик не вернулся, поэтому режим продолжается: оверлей переезжает на новую
+        дату, в панель уходит только она. Закрывать сессию «оплатой» нельзя — панель
+        тут же снова выставила бы LIMITED, и всё началось бы заново (29.10.2026).
+        ``None`` — ничего не сделано, дальше обычная сверка.
+        """
+        now = _as_utc(self._clock())
+        if not strip_session_follows_billing(session, billing, now=now):
+            return None
+        new_overlay = replace(session.overlay, expire_at=_as_utc(billing.end_at) - STRIP_OVERLAY_DATE_OFFSET)
+        current_panel = await self._panel.read_snapshot(session.remnawave_id)
+        if current_panel is None:
+            return None
+        # Панель уже на новой дате — прошлый проход упал между PATCH и сохранением сессии.
+        already_moved = panel_matches_overlay(current_panel, new_overlay, now=now)
+        if not already_moved and not panel_matches_overlay(current_panel, session.overlay, now=now):
+            # Панель уже не наша — пусть решает обычная сверка (конфликт/канон).
+            return None
+
+        remember = getattr(self._store, 'remember_overlay_date', None)
+        if remember is not None:
+            # Как и при выдаче: дата оверлея на подписке — до PATCH в панель.
+            await remember(session.subscription_id, new_overlay.expire_at)
+        if not already_moved:
+            await self._panel.apply_overlay(session.remnawave_id, new_overlay)
+        followed = replace(
+            session,
+            overlay=new_overlay,
+            grace_until=new_overlay.expire_at,
+            billing_before=replace(session.billing_before, end_at=_as_utc(billing.end_at)),
+            updated_at=now,
+            last_error=None,
+        )
+        await self._store.save(followed)
+        logger.info(
+            'Grace без белых списков: подписку продлили днями, оверлей переехал на новую дату',
+            grace_session_id=session.id,
+            subscription_id=session.subscription_id,
+            old_end=_as_utc(session.billing_before.end_at).isoformat() if session.billing_before.end_at else None,
+            new_end=_as_utc(billing.end_at).isoformat(),
+        )
+        return 'unchanged'
 
     async def _restore_and_complete(
         self,
@@ -1023,10 +1102,15 @@ def build_panel_overlay(
     *,
     now: datetime,
     reset_used_traffic: bool = False,
+    billing_end_at: datetime | None = None,
 ) -> GracePanelOverlay:
     """Calculate temporary panel values; consumed traffic is reset only on request."""
     if not snapshot.traffic_is_known:
         raise ValueError(f'Remnawave did not return traffic usage for a {reason.value.upper()} user')
+
+    strip_overlay = build_strip_overlay(snapshot, reason, policy, now=now, billing_end_at=billing_end_at)
+    if strip_overlay is not None:
+        return strip_overlay
 
     # Remnawave compares its cumulative usage counter with trafficLimitBytes.
     # Keeping the counter and adding the configured grant therefore gives the
@@ -1051,6 +1135,101 @@ def build_panel_overlay(
         squad_uuids=(policy.squad_for(reason),),
         external_squad_uuid=external_squad_uuid,
         reset_used_traffic=reset_used_traffic,
+    )
+
+
+def build_strip_overlay(
+    snapshot: GracePanelSnapshot,
+    reason: GraceReason,
+    policy: GraceAccessPolicy,
+    *,
+    now: datetime,
+    billing_end_at: datetime | None,
+) -> GracePanelOverlay | None:
+    """Оверлей «без белых списков» или ``None``, если режим тут неприменим.
+
+    Неприменим, когда стратегия другая, снимать нечего, после снятия не остаётся
+    ни одного сквада или до конца подписки меньше ``STRIP_MIN_REMAINING`` — тогда
+    работает обычный grace. Внешний сквад остаётся: человек сохраняет всё, кроме
+    снятых сквадов. Лимит — расход плюс запас: на остальных нодах трафик не
+    считается, а если сквад белых списков вернут мимо бота, человек упрётся в запас.
+    """
+    if reason is not GraceReason.LIMITED or policy.limited_strategy != GraceLimitedStrategy.STRIP_SQUADS.value:
+        return None
+    if billing_end_at is None:
+        return None
+    stripped = policy.strip_squad_uuids
+    if not stripped.intersection(snapshot.squad_uuids):
+        return None
+    kept = tuple(squad for squad in snapshot.squad_uuids if squad not in stripped)
+    if not kept:
+        return None
+    expire_at = _as_utc(billing_end_at) - STRIP_OVERLAY_DATE_OFFSET
+    if expire_at - _as_utc(now) < STRIP_MIN_REMAINING:
+        return None
+    return GracePanelOverlay(
+        status='ACTIVE',
+        expire_at=expire_at,
+        traffic_limit_bytes=snapshot.used_traffic_bytes + policy.strip_buffer_bytes,
+        squad_uuids=kept,
+        external_squad_uuid=snapshot.external_squad_uuid,
+        strip_squads=True,
+    )
+
+
+def session_billing_holds(session: GraceAccessSession, current: GraceBillingState) -> bool:
+    """Инцидент сессии всё ещё тот же — продолжать оверлей можно.
+
+    Обычный grace: статус равен причине и все канонические поля совпадают со
+    снимком. «Без белых списков»: подписку могли продлить днями, и бот тогда
+    держит её ``active`` при исчерпанном трафике — это тот же инцидент.
+    """
+    if not session.overlay.strip_squads:
+        return billing_incident_is_eligible(current, session.reason) and billing_still_matches_session(session, current)
+    return _strip_incident_holds(current) and _strip_billing_matches(session, current, ignore_end=False)
+
+
+def strip_session_follows_billing(session: GraceAccessSession, current: GraceBillingState, *, now: datetime) -> bool:
+    """В биллинге поменялась только дата — оверлей «без белых списков» переезжает за ней.
+
+    Эхо даты оверлея не считается: иначе каждый проход сдвигал бы дату ещё на
+    минуту. Новая дата слишком близко — пусть сессия кончается штатно.
+    """
+    if not session.overlay.strip_squads or current.end_at is None:
+        return False
+    if billing_echoes_overlay(session, current):
+        return False
+    if _datetimes_equal(current.end_at, session.billing_before.end_at):
+        return False
+    if _as_utc(current.end_at) - STRIP_OVERLAY_DATE_OFFSET - _as_utc(now) < STRIP_MIN_REMAINING:
+        return False
+    return _strip_incident_holds(current) and _strip_billing_matches(session, current, ignore_end=True)
+
+
+def _strip_incident_holds(current: GraceBillingState) -> bool:
+    suppressed = False
+    if current.grace_suppressed_until is not None:
+        suppressed_until = _as_utc(current.grace_suppressed_until)
+        suppressed = current.end_at is None or _as_utc(current.end_at) <= suppressed_until
+    return (
+        _normalize_status(current.status) in {'limited', 'active'}
+        and _normalize_status(current.user_status) == 'active'
+        and not suppressed
+    )
+
+
+def _strip_billing_matches(session: GraceAccessSession, current: GraceBillingState, *, ignore_end: bool) -> bool:
+    before = session.billing_before
+    return (
+        current.remnawave_id == session.remnawave_id
+        and (ignore_end or _datetimes_equal(current.end_at, before.end_at))
+        and current.traffic_limit_bytes == before.traffic_limit_bytes
+        and current.device_limit == before.device_limit
+        and set(current.squad_uuids) == set(before.squad_uuids)
+        and current.external_squad_uuid == before.external_squad_uuid
+        and current.is_trial == before.is_trial
+        and current.is_daily == before.is_daily
+        and current.is_free_tariff == before.is_free_tariff
     )
 
 
@@ -1115,6 +1294,10 @@ def plan_grace_echo_repair(
     Лимит сравнивается в целых гигабайтах: в подписку он приходил из панели
     округлённым вниз, а «расход + квота» почти никогда не делится нацело.
     """
+    # Сквады оверлея «без белых списков» — настоящие сквады подписки, а дата — её
+    # настоящий конец без минуты: «чинить» тут нечего, а сессия сломала бы выбор
+    # источника для старых сессий.
+    sessions = [session for session in sessions if not session.overlay.strip_squads]
     if not sessions:
         return None
     overlay_dates = [_as_utc(session.overlay.expire_at) for session in sessions]
@@ -1182,7 +1365,9 @@ def billing_has_recovered(session: GraceAccessSession, current: GraceBillingStat
         return False
 
     before = session.billing_before
-    if _is_later(current.end_at, before.end_at):
+    # «Без белых списков» возвращает только трафик: продление днями белые списки
+    # не возвращает, оверлей просто переезжает на новую дату.
+    if not session.overlay.strip_squads and _is_later(current.end_at, before.end_at):
         return True
     if before.traffic_limit_bytes > 0 and current.traffic_limit_bytes == 0:
         return True

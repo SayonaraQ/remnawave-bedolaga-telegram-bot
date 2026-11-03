@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database.models import GraceAccessSessionModel, Subscription, User
-from app.services.grace_access_runtime import collect_grace_status, grace_access_runtime
+from app.services.grace_access_runtime import collect_grace_status, grace_access_runtime, parse_strip_squad_uuids
 from app.services.grace_access_service import GraceAccessMode, GraceSessionState
 from app.services.system_settings_service import (
     ReadOnlySettingError,
@@ -46,6 +46,9 @@ FIELD_KEYS: dict[str, str] = {
     'duration_hours': 'GRACE_ACCESS_DURATION_HOURS',
     'expired_squad_uuid': 'GRACE_ACCESS_EXPIRED_SQUAD_UUID',
     'limited_squad_uuid': 'GRACE_ACCESS_LIMITED_SQUAD_UUID',
+    'limited_strategy': 'GRACE_ACCESS_LIMITED_STRATEGY',
+    'limited_strip_squad_uuids': 'GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS',
+    'limited_strip_buffer_mb': 'GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB',
     'external_squad_uuid': 'GRACE_ACCESS_EXTERNAL_SQUAD_UUID',
     'traffic_gb': 'GRACE_ACCESS_TRAFFIC_GB',
     'reset_traffic_on_start': 'GRACE_ACCESS_RESET_TRAFFIC_ON_START',
@@ -104,6 +107,11 @@ class GraceAccessConfig(BaseModel):
     duration_hours: int
     expired_squad_uuid: str
     limited_squad_uuid: str
+    # squad — сквад grace на срок; strip_squads — снять только эти сквады (белые списки)
+    # до докупки трафика, сброса или конца подписки.
+    limited_strategy: str = 'squad'
+    limited_strip_squad_uuids: str = ''
+    limited_strip_buffer_mb: int = 100
     external_squad_uuid: str
     traffic_gb: int
     reset_traffic_on_start: bool
@@ -174,6 +182,9 @@ class GraceAccessUpdate(BaseModel):
     duration_hours: int | None = Field(default=None, ge=1, le=8760)
     expired_squad_uuid: str | None = None
     limited_squad_uuid: str | None = None
+    limited_strategy: Literal['squad', 'strip_squads'] | None = None
+    limited_strip_squad_uuids: str | None = Field(default=None, max_length=2000)
+    limited_strip_buffer_mb: int | None = Field(default=None, ge=1, le=102400)
     external_squad_uuid: str | None = None
     traffic_gb: int | None = Field(default=None, ge=0, le=1024)
     reset_traffic_on_start: bool | None = None
@@ -303,6 +314,13 @@ def _collect_issues(config: GraceAccessConfig, *, open_sessions: int, running_mo
             issues.append(GraceAccessIssue(field=field, code='squad_required', severity=weight))
         elif not _is_uuid(raw):
             issues.append(GraceAccessIssue(field=field, code='squad_invalid', severity=weight))
+
+    if config.limited_strategy == 'strip_squads':
+        strip_uuids = parse_strip_squad_uuids(config.limited_strip_squad_uuids)
+        if not strip_uuids:
+            issues.append(GraceAccessIssue(field='limited_strip_squad_uuids', code='squad_required', severity=weight))
+        elif not all(_is_uuid(value) for value in strip_uuids):
+            issues.append(GraceAccessIssue(field='limited_strip_squad_uuids', code='squad_invalid', severity=weight))
 
     external = _normalize_squad(config.external_squad_uuid)
     if external and external.lower() != EXTERNAL_SQUAD_KEEP and not _is_uuid(external):
@@ -589,6 +607,8 @@ async def update_grace_access(
             patch[field] = _normalize_squad(patch[field] or '')
     if 'allowed_services' in patch:
         patch['allowed_services'] = ' '.join(str(patch['allowed_services'] or '').split())
+    if 'limited_strip_squad_uuids' in patch:
+        patch['limited_strip_squad_uuids'] = ', '.join(parse_strip_squad_uuids(patch['limited_strip_squad_uuids']))
 
     # Unchanged fields are dropped before the env-lock check: the page submits the whole
     # form, and rejecting it because one pinned field came back with its own value would

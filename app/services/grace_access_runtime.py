@@ -10,6 +10,7 @@ GRACE_ACCESS_RESET_TRAFFIC_ON_START allows it (see should_reset_used_traffic).
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -53,6 +54,7 @@ from app.services.grace_access_service import (
     GraceAccessService,
     GraceAccessSession,
     GraceBillingState,
+    GraceLimitedStrategy,
     GracePanelOverlay,
     GracePanelSnapshot,
     GracePanelTransitionConflict,
@@ -300,6 +302,18 @@ class SQLAlchemyGraceSessionStore:
                 raise GraceSnapshotError(f'Grace session {session.id} disappeared during restore checkpoint')
             return _model_to_session(current_model)
         return saved
+
+    async def remember_overlay_date(self, subscription_id: int, expire_at: datetime) -> None:
+        """Новая дата оверлея на подписке — до PATCH в панель, как при выдаче.
+
+        Нужна режиму «без белых списков»: продление днями переносит оверлей на новую
+        дату, и снимок панели с ней тоже должен опознаваться как оверлей.
+        """
+        await self._db.execute(
+            update(Subscription)
+            .where(Subscription.id == subscription_id)
+            .values(grace_overlay_expire_at=_as_utc(expire_at))
+        )
 
     async def list_open(self, *, limit: int) -> Sequence[GraceAccessSession]:
         query = select(GraceAccessSessionModel).where(GraceAccessSessionModel.state.in_(_OPEN_STATES))
@@ -1159,8 +1173,19 @@ async def _reactivate_after_traffic_reset(db: AsyncSession, subscription_id: int
     if session is None:
         return False
     billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
-    if billing is None or not traffic_reset_ended_limited_incident(session, billing, now=datetime.now(UTC)):
+    if billing is None:
         return False
+    now = datetime.now(UTC)
+    if not traffic_reset_ended_limited_incident(session, billing, now=now):
+        if not await _adopt_panel_traffic_reset(db, session, billing):
+            return False
+        billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
+        if billing is None:
+            return False
+        if not traffic_reset_ended_limited_incident(session, billing, now=now):
+            # Подписка уже active (продлили днями в режиме «без белых списков»):
+            # упавший расход сверка сама примет за восстановление.
+            return True
 
     subscription = await db.get(Subscription, subscription_id)
     if subscription is None:
@@ -1174,6 +1199,52 @@ async def _reactivate_after_traffic_reset(db: AsyncSession, subscription_id: int
         grace_session_id=session.id,
         used_before=session.billing_before.used_traffic_bytes,
         used_now=billing.used_traffic_bytes,
+    )
+    return True
+
+
+async def _adopt_panel_traffic_reset(db: AsyncSession, session: GraceAccessSession, billing: Any) -> bool:
+    """Перенести в подписку расход из панели, если панель его уже сбросила.
+
+    Бот узнаёт о сбросе только из синхронизации: вебхука нет (у человека на
+    grace в панели ACTIVE, а ``user.enabled`` панель шлёт только LIMITED), а
+    полная синхронизация идёт раз-два в сутки. 01.11.2026 из grace по трафику
+    выходили через 14 и 24 часа после сброса, один человек за это время докупил
+    уже сброшенный трафик. Поэтому каждый проход сверки сам смотрит расход в
+    панели: упал ниже снятого при выдаче — значит, сброс, и сверка тут же
+    вернёт канон. Сбой чтения панели — просто ждём следующего прохода.
+    """
+    if session.reason is not GraceReason.LIMITED or session.state is not GraceSessionState.ACTIVE:
+        return False
+    try:
+        panel = await RemnawaveGracePanelGateway(db=db, subscription_id=session.subscription_id).read_snapshot(
+            session.remnawave_id
+        )
+    except Exception as error:
+        logger.warning(
+            'Не удалось прочитать расход в панели для grace по трафику',
+            subscription_id=session.subscription_id,
+            error=str(error),
+        )
+        return False
+    if panel is None or not panel.traffic_is_known:
+        return False
+    if panel.used_traffic_bytes >= session.panel_before.used_traffic_bytes:
+        return False
+    if billing.used_traffic_bytes <= panel.used_traffic_bytes:
+        return False
+    subscription = await db.get(Subscription, session.subscription_id)
+    if subscription is None:
+        return False
+    subscription.traffic_used_gb = panel.used_traffic_bytes / 1024**3
+    subscription.updated_at = datetime.now(UTC)
+    await db.flush((subscription,))
+    logger.info(
+        'Сброс трафика замечен в панели во время grace по трафику',
+        subscription_id=session.subscription_id,
+        grace_session_id=session.id,
+        used_before=session.panel_before.used_traffic_bytes,
+        used_panel=panel.used_traffic_bytes,
     )
     return True
 
@@ -1781,7 +1852,15 @@ def _build_policy() -> GraceAccessPolicy:
         reconcile_batch_size=settings.GRACE_ACCESS_RECONCILE_BATCH_SIZE,
         external_squad_uuid=settings.GRACE_ACCESS_EXTERNAL_SQUAD_UUID.strip() or None,
         reset_traffic_on_start=settings.GRACE_ACCESS_RESET_TRAFFIC_ON_START,
+        limited_strategy=settings.GRACE_ACCESS_LIMITED_STRATEGY,
+        strip_squad_uuids=frozenset(parse_strip_squad_uuids(settings.GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS)),
+        strip_buffer_bytes=settings.GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB * 1024**2,
     )
+
+
+def parse_strip_squad_uuids(raw: str | None) -> tuple[str, ...]:
+    """Список сквадов из настройки: через запятую, пробел или с новой строки."""
+    return tuple(dict.fromkeys(part.strip() for part in re.split(r'[\s,;]+', raw or '') if part.strip()))
 
 
 def _validate_active_configuration() -> None:
@@ -1797,6 +1876,17 @@ def _validate_active_configuration() -> None:
             UUID(raw_uuid.strip())
         except ValueError as error:
             raise ValueError(f'{label} must contain a valid UUID') from error
+    if GraceLimitedStrategy.STRIP_SQUADS.value == settings.GRACE_ACCESS_LIMITED_STRATEGY:
+        strip_uuids = parse_strip_squad_uuids(settings.GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS)
+        if not strip_uuids:
+            raise ValueError('GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS is required for the strip_squads strategy')
+        for raw_uuid in strip_uuids:
+            try:
+                UUID(raw_uuid)
+            except ValueError as error:
+                raise ValueError(
+                    f'GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS must contain valid UUIDs, got {raw_uuid!r}'
+                ) from error
 
 
 async def collect_grace_status(db: AsyncSession, *, error_limit: int = 20) -> dict[str, Any]:
@@ -1932,7 +2022,14 @@ def _panel_user_to_snapshot(panel_user: Any) -> GracePanelSnapshot:
         external_squad_uuid=panel_user.external_squad_uuid,
         traffic_is_known=panel_user.user_traffic is not None,
         last_traffic_reset_at=(_as_utc(panel_user.last_traffic_reset_at) if panel_user.last_traffic_reset_at else None),
+        traffic_limit_strategy=_traffic_strategy_name(getattr(panel_user, 'traffic_limit_strategy', None)),
     )
+
+
+def _traffic_strategy_name(value: Any) -> str | None:
+    raw = getattr(value, 'value', value)
+    text_value = str(raw or '').strip().upper()
+    return text_value or None
 
 
 def _build_restore_target(

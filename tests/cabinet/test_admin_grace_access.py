@@ -629,3 +629,57 @@ class TestSquadPicker:
         assert response.available is True
         assert [item.uuid for item in response.items] == [VALID_UUID]
         assert response.items[0].members_count == 4
+
+
+class TestStripStrategy:
+    """«Без белых списков»: без списка сквадов grace при старте выключился бы молча."""
+
+    @pytest.fixture(autouse=True)
+    def _strip_defaults(self, monkeypatch):
+        # monkeypatch вернёт исходные значения и после прямой записи из ``saved``.
+        from app.config import settings
+
+        monkeypatch.setattr(settings, 'GRACE_ACCESS_LIMITED_STRATEGY', 'squad')
+        monkeypatch.setattr(settings, 'GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS', '')
+        monkeypatch.setattr(settings, 'GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB', 100)
+
+    @pytest.mark.asyncio
+    async def test_strip_without_squads_blocks_enabling(self, saved, empty_db, status_snapshot, config):
+        config.GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS = ''
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _update(empty_db, mode='true', limited_strategy='strip_squads')
+
+        assert excinfo.value.status_code == 400
+        assert 'limited_strip_squad_uuids' in excinfo.value.detail
+        assert saved == []
+
+    @pytest.mark.asyncio
+    async def test_strip_with_malformed_squad_blocks_enabling(self, saved, empty_db, status_snapshot, config):
+        with pytest.raises(HTTPException) as excinfo:
+            await _update(
+                empty_db,
+                mode='true',
+                limited_strategy='strip_squads',
+                limited_strip_squad_uuids=f'{VALID_UUID}, не-uuid',
+            )
+
+        assert excinfo.value.status_code == 400
+        assert saved == []
+
+    @pytest.mark.asyncio
+    async def test_strip_squads_are_saved_normalized(self, saved, empty_db, status_snapshot, config):
+        overview = await _update(
+            empty_db,
+            mode='true',
+            limited_strategy='strip_squads',
+            limited_strip_squad_uuids=f' {VALID_UUID}\n{OTHER_UUID} ,{VALID_UUID}',
+            limited_strip_buffer_mb=200,
+        )
+
+        written = dict(saved)
+        assert written['GRACE_ACCESS_LIMITED_STRATEGY'] == 'strip_squads'
+        assert written['GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS'] == f'{VALID_UUID}, {OTHER_UUID}'
+        assert written['GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB'] == 200
+        assert overview.config.limited_strategy == 'strip_squads'
+        assert not [issue for issue in overview.issues if issue.field == 'limited_strip_squad_uuids']

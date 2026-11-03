@@ -281,6 +281,15 @@ class Settings(BaseSettings):
     # Внешний сквад для grace-доступа: пусто = сброс в None, 'keep' = сохранять текущий, либо UUID аварийного внешнего сквада
     GRACE_ACCESS_EXTERNAL_SQUAD_UUID: str = ''
     GRACE_ACCESS_TRAFFIC_GB: int = 1
+    # Что делать при исчерпании трафика: squad — сквад grace (только Telegram) на
+    # GRACE_ACCESS_DURATION_HOURS; strip_squads — снять только сквады из
+    # GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS (белые списки) до докупки трафика,
+    # сброса или конца подписки, остальные сквады работают как обычно.
+    GRACE_ACCESS_LIMITED_STRATEGY: Literal['squad', 'strip_squads'] = 'squad'
+    GRACE_ACCESS_LIMITED_STRIP_SQUAD_UUIDS: str = ''
+    # Запас лимита на время «без белых списков»: расход + запас. На остальных
+    # нодах трафик не считается, запас лишь страхует от возврата сквада мимо бота.
+    GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB: int = 100
     # Обнулять счётчик трафика при выдаче grace, чтобы панель и клиент показывали
     # «0 из N ГБ», а не «64.76 из 65.76 GiB». Только истёкшие подписки с безлимитом:
     # там счётчик чисто информационный. Расход до grace при этом теряется.
@@ -1716,6 +1725,22 @@ class Settings(BaseSettings):
         parsed = int(value)
         if parsed < 0:
             raise ValueError('Grace access traffic must not be negative')
+        return parsed
+
+    @field_validator('GRACE_ACCESS_LIMITED_STRATEGY', mode='before')
+    @classmethod
+    def normalize_grace_limited_strategy(cls, value: str | None) -> str:
+        normalized = str(value or 'squad').strip().lower()
+        if normalized not in {'squad', 'strip_squads'}:
+            raise ValueError('GRACE_ACCESS_LIMITED_STRATEGY must be one of: squad, strip_squads')
+        return normalized
+
+    @field_validator('GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB', mode='before')
+    @classmethod
+    def ensure_grace_strip_buffer(cls, value: int | str) -> int:
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError('GRACE_ACCESS_LIMITED_STRIP_BUFFER_MB must be at least 1')
         return parsed
 
     @field_validator('SERVER_STATUS_MODE', mode='before')

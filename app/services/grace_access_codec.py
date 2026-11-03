@@ -165,6 +165,7 @@ def _panel_to_json(value: GracePanelSnapshot) -> dict[str, Any]:
         'external_squad_uuid': value.external_squad_uuid,
         'traffic_is_known': value.traffic_is_known,
         'last_traffic_reset_at': _datetime_to_json(value.last_traffic_reset_at),
+        'traffic_limit_strategy': value.traffic_limit_strategy,
     }
 
 
@@ -186,6 +187,8 @@ def _panel_from_json(raw: Any, *, fallback_remnawave_id: int | None = None) -> G
         external_squad_uuid=_optional_string(data.get('external_squad_uuid')),
         traffic_is_known=bool(data.get('traffic_is_known', True)),
         last_traffic_reset_at=_datetime_from_json(data.get('last_traffic_reset_at')),
+        # Снимки до режима «без белых списков» стратегию не хранили.
+        traffic_limit_strategy=_optional_string(data.get('traffic_limit_strategy')),
     )
 
 
@@ -197,6 +200,7 @@ def _overlay_to_json(value: GracePanelOverlay) -> dict[str, Any]:
         'squad_uuids': list(value.squad_uuids),
         'external_squad_uuid': value.external_squad_uuid,
         'reset_used_traffic': value.reset_used_traffic,
+        'strip_squads': value.strip_squads,
     }
 
 
@@ -213,6 +217,8 @@ def _overlay_from_json(raw: Any) -> GracePanelOverlay:
         external_squad_uuid=_optional_string(data.get('external_squad_uuid')),
         # Сессии, записанные до появления настройки, счётчик не обнуляли.
         reset_used_traffic=bool(data.get('reset_used_traffic', False)),
+        # Сессии до режима «без белых списков» — обычный grace со сквадом.
+        strip_squads=bool(data.get('strip_squads', False)),
     )
 
 
