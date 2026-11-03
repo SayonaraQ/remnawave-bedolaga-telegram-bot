@@ -153,13 +153,26 @@ async def prepare_traffic_purchase(db, subscription, *, requested_gb=None):
     owner_id = subscription.user_id
     if not subscription.traffic_limit_gb:
         raise AccountingConflict('Cannot grant finite traffic to an unlimited subscription')
+    from app.services.grace_access_runtime import limited_grace_accepts_traffic_purchase
+
+    # Форк: докупка — штатный выход из grace по трафику (в 5.1.1 так и было: оплатил —
+    # белые списки сразу вернулись). Апстрим 5.2.0 запрещает покупку при открытом
+    # grace, а эта проверка у него стоит ДО проверки баланса. Legacy-подписку в
+    # grace покупаем по-старому, без перевода в учёт: перевод читал бы оверлей
+    # панели. Переведёт её воркер, когда grace закроется.
+    legacy_in_grace = (
+        getattr(subscription, 'traffic_accounting_mode', 'legacy') == 'legacy'
+        and bool(getattr(subscription, 'grace_session_open', False))
+        and await limited_grace_accepts_traffic_purchase(db, subscription_id)
+    )
     async with SubscriptionService().get_api_client() as api:
-        await ensure_managed_account(
-            async_sessionmaker(db.bind, expire_on_commit=False),
-            api,
-            subscription_id,
-            timezone=getattr(settings, 'REMNAWAVE_TRAFFIC_RESET_TIMEZONE', 'UTC'),
-        )
+        if not legacy_in_grace:
+            await ensure_managed_account(
+                async_sessionmaker(db.bind, expire_on_commit=False),
+                api,
+                subscription_id,
+                timezone=getattr(settings, 'REMNAWAVE_TRAFFIC_RESET_TIMEZONE', 'UTC'),
+            )
         subscription, grace_open = await lock_accounting_subscription(db, subscription_id)
         if (
             subscription_terms(subscription) != initial_terms
@@ -168,8 +181,11 @@ async def prepare_traffic_purchase(db, subscription, *, requested_gb=None):
             raise AccountingConflict('Subscription terms changed; retry the purchase')
         if subscription.user_id != owner_id:
             raise AccountingConflict('Subscription ownership changed')
-        if grace_open:
+        if grace_open and not await limited_grace_accepts_traffic_purchase(db, subscription_id):
             raise AccountingConflict('Finish temporary renewal access before adding traffic')
+        if legacy_in_grace and not grace_open:
+            # Grace закрылся между проверкой и блокировкой — перевод не сделан, повтор.
+            raise AccountingConflict('Grace closed during purchase preparation; retry')
         if not subscription.traffic_limit_gb:
             raise AccountingConflict('Subscription became unlimited')
         if requested_gb is not None and requested_gb > 0 and subscription.tariff is not None:
@@ -179,6 +195,9 @@ async def prepare_traffic_purchase(db, subscription, *, requested_gb=None):
             maximum = tariff.max_topup_traffic_gb or 0
             if maximum and subscription.traffic_limit_gb + requested_gb > maximum:
                 raise AccountingConflict('Traffic top-up exceeds the tariff limit')
+        if legacy_in_grace:
+            # Legacy-путь покупки: без снимка панели, как до 5.2.0.
+            return subscription, None
         panel = await _fresh_panel(db, api, subscription)
     return subscription, panel
 

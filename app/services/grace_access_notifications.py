@@ -14,7 +14,7 @@ grace. Ключи ``GRACE_ACCESS_NOTIFY_ADMINS`` / ``GRACE_ACCESS_NOTIFY_USER``
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -52,6 +52,8 @@ class _GraceDetails:
     strip: bool = False
     traffic_limit_strategy: str | None = None
     limit_before_bytes: int = 0
+    #: Managed-учёт (5.2.0): панель на NO_RESET, дату сброса знает учёт бота.
+    next_reset_at: datetime | None = None
 
 
 async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent) -> None:
@@ -77,6 +79,15 @@ async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent
                     .limit(1)
                 )
             ).scalar_one_or_none()
+            next_reset_at = None
+            if subscription is not None and getattr(subscription, 'traffic_accounting_mode', None) == 'managed':
+                from app.database.models import TrafficAccountingState
+
+                next_reset_at = await db.scalar(
+                    select(TrafficAccountingState.next_refresh_at).where(
+                        TrafficAccountingState.subscription_id == subscription_id
+                    )
+                )
         if subscription is None or subscription.user is None or row is None:
             logger.warning(
                 'Grace event has no subscription or session to describe',
@@ -85,6 +96,8 @@ async def announce_grace_event(bot: Any, subscription_id: int, event: GraceEvent
             )
             return
         details = _details(row)
+        if next_reset_at is not None:
+            details = replace(details, next_reset_at=_as_utc(next_reset_at))
     except Exception:
         logger.exception('Grace event could not be loaded', subscription_id=subscription_id, grace_event=event)
         return
@@ -248,7 +261,11 @@ async def _notify_user_strip(bot: Any, event: GraceEvent, subscription: Subscrip
     if event == 'granted':
         text_key = 'GRACE_ACCESS_GRANTED_STRIP'
         notification_type = NotificationType.GRACE_ACCESS_GRANTED
-        reset_date = next_traffic_reset_label(details.traffic_limit_strategy)
+        reset_date = (
+            managed_reset_label(details.next_reset_at)
+            if details.next_reset_at is not None
+            else next_traffic_reset_label(details.traffic_limit_strategy)
+        )
         reset_phrase = (
             texts.get('GRACE_ACCESS_STRIP_RESET_PHRASE', ' до {date}').format(date=reset_date) if reset_date else ''
         )
@@ -310,6 +327,13 @@ def next_traffic_reset_label(strategy: str | None, *, now: datetime | None = Non
     else:
         first = local_now.replace(month=local_now.month + 1, day=1)
     return first.strftime('%d.%m')
+
+
+def managed_reset_label(next_reset_at: datetime) -> str:
+    """Дата следующей выдачи базы из учёта бота — в часовом поясе интерфейса."""
+    from app.utils.timezone import get_local_timezone
+
+    return _as_utc(next_reset_at).astimezone(get_local_timezone()).strftime('%d.%m')
 
 
 def grace_allowed_services() -> str:

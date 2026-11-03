@@ -243,7 +243,9 @@ class SQLAlchemyGraceSessionStore:
                     .where(Subscription.id == session.subscription_id)
                     .values(grace_overlay_expire_at=_as_utc(session.overlay.expire_at))
                 )
-                if session.reason is GraceReason.LIMITED:
+                if session.reason is GraceReason.LIMITED and not session.billing_before.traffic_managed:
+                    # Managed-подписке расход в боте ведёт учёт (номинал минус остаток),
+                    # трогать его нельзя. Остальным:
                     # Расход, с которым сравнивается сброс, должен совпадать с расходом
                     # подписки: синхронизация потом приносит из панели то же или
                     # больше, меньше — только настоящий сброс. Иначе устаревший расход
@@ -403,7 +405,37 @@ class SQLAlchemyGraceBillingGateway:
         subscription = result.scalar_one_or_none()
         if subscription is None or subscription.user is None:
             return None
-        return _subscription_to_billing(subscription)
+        return await _with_managed_traffic(self._db, subscription, _subscription_to_billing(subscription))
+
+
+async def _with_managed_traffic(
+    db: AsyncSession, subscription: Subscription, billing: GraceBillingState
+) -> GraceBillingState:
+    """Расход managed-подписки (5.2.0) — «номинал минус остаток» из учёта бота.
+
+    ``traffic_used_gb`` такой подписки бот пересчитывает только вне grace, а
+    панель на NO_RESET: ни докупка, ни выданная 1-го числа база иначе не видны
+    как восстановление — режим «без белых списков» держался бы до конца подписки.
+    Читаем без блокировок: это наблюдение, решения под блокировкой принимает учёт.
+    """
+    if getattr(subscription, 'traffic_accounting_mode', 'legacy') != 'managed':
+        return billing
+    from app.database.models import TrafficAccountingState, TrafficAllowance
+
+    phase = await db.scalar(
+        select(TrafficAccountingState.phase).where(TrafficAccountingState.subscription_id == subscription.id)
+    )
+    if phase != 'ready' or billing.traffic_limit_bytes <= 0:
+        return replace(billing, traffic_managed=True)
+    now = datetime.now(UTC)
+    remaining = await db.scalar(
+        select(func.coalesce(func.sum(TrafficAllowance.remaining_bytes), 0)).where(
+            TrafficAllowance.subscription_id == subscription.id,
+            TrafficAllowance.expires_at > now,
+        )
+    )
+    used = max(0, billing.traffic_limit_bytes - int(remaining or 0))
+    return replace(billing, used_traffic_bytes=used, traffic_managed=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1266,6 +1298,10 @@ async def _reactivate_after_traffic_reset(
     if billing is None:
         return False
     now = datetime.now(UTC)
+    if billing.traffic_managed and await _grant_managed_base_if_due(db, session, now=now):
+        billing = await SQLAlchemyGraceBillingGateway(db).get_subscription(subscription_id)
+        if billing is None:
+            return False
     if not traffic_reset_ended_limited_incident(session, billing, now=now):
         if not await _adopt_panel_traffic_reset(db, session, billing, panel=panel):
             return False
@@ -1289,6 +1325,58 @@ async def _reactivate_after_traffic_reset(
         grace_session_id=session.id,
         used_before=session.billing_before.used_traffic_bytes,
         used_now=billing.used_traffic_bytes,
+    )
+    return True
+
+
+async def _grant_managed_base_if_due(db: AsyncSession, session: GraceAccessSession, *, now: datetime) -> bool:
+    """Выдать managed-подписке базу 1-го числа, пока открыт grace по трафику.
+
+    Учёт 5.2.0 календарь при открытом grace пропускает (``grace_excluded``) и
+    догоняет его только после выхода. Классический grace сам кончается через
+    72 часа, а «без белых списков» живёт до конца подписки — человек месяц сидел
+    бы без белых списков при уже наступившем сбросе. Выдаём ту же календарную
+    базу, что выдал бы учёт; дальше сверка видит восстановление (расход в
+    биллинге = номинал минус остаток) и закрывает сессию обычным путём.
+    Коммитит вызывающий; при любой ошибке ждём следующего прохода.
+    """
+    if session.reason is not GraceReason.LIMITED or session.state is not GraceSessionState.ACTIVE:
+        return False
+    from app.database.models import TrafficAccountingState
+
+    due = await db.scalar(
+        select(TrafficAccountingState.next_refresh_at).where(
+            TrafficAccountingState.subscription_id == session.subscription_id,
+            TrafficAccountingState.phase == 'ready',
+        )
+    )
+    if due is None or _as_utc(due) > _as_utc(now):
+        return False
+    from app.services.remnawave_service import remnawave_service
+    from app.services.traffic_accounting_service import (
+        _fresh_panel,
+        lock_accounting_subscription,
+        reconcile_account_locked,
+    )
+
+    try:
+        async with db.begin_nested():
+            subscription, _ = await lock_accounting_subscription(db, session.subscription_id)
+            async with remnawave_service.get_api_client() as api:
+                panel_user = await _fresh_panel(db, api, subscription)
+            await reconcile_account_locked(db, subscription, panel_user, now=now, refresh_during_grace=True)
+    except Exception as error:
+        logger.warning(
+            'Не удалось выдать базу трафика во время grace',
+            subscription_id=session.subscription_id,
+            error=str(error),
+        )
+        return False
+    logger.info(
+        'Выдана календарная база трафика во время grace по лимиту',
+        subscription_id=session.subscription_id,
+        grace_session_id=session.id,
+        due=_as_utc(due).isoformat(),
     )
     return True
 
@@ -1358,6 +1446,10 @@ async def _adopt_panel_traffic_reset(
     """
     if session.reason is not GraceReason.LIMITED or session.state is not GraceSessionState.ACTIVE:
         return False
+    if getattr(billing, 'traffic_managed', False):
+        # Managed: панель на NO_RESET, падение её счётчика — не сброс. Базу 1-го
+        # числа выдаёт учёт бота (_grant_managed_base_if_due).
+        return False
     gateway = panel or RemnawaveGracePanelGateway(db=db, subscription_id=session.subscription_id)
     try:
         snapshot = await gateway.read_snapshot(session.remnawave_id)
@@ -1388,6 +1480,21 @@ async def _adopt_panel_traffic_reset(
         used_panel=snapshot.used_traffic_bytes,
     )
     return True
+
+
+async def limited_grace_accepts_traffic_purchase(db: AsyncSession, subscription_id: int) -> bool:
+    """Открыт активный grace по трафику — докупка его штатно закрывает.
+
+    Только ACTIVE и только LIMITED: выдача и откат (PENDING/RESTORING) ещё пишут
+    в панель, а grace по истечению трафиком не лечится.
+    """
+    reason = await db.scalar(
+        select(GraceAccessSessionModel.reason).where(
+            GraceAccessSessionModel.subscription_id == subscription_id,
+            GraceAccessSessionModel.state == GraceSessionState.ACTIVE.value,
+        )
+    )
+    return reason == GraceReason.LIMITED.value
 
 
 async def strip_grace_holds_canonical(db: AsyncSession, subscription_id: int) -> bool:

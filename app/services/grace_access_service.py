@@ -177,6 +177,10 @@ class GraceBillingState:
     is_free_tariff: bool = False
     user_status: str = 'active'
     grace_suppressed_until: datetime | None = None
+    #: Управляемый учёт трафика (5.2.0): расход выше — «номинал минус остаток» из
+    #: учёта бота, а не счётчик панели. Панель у такой подписки на NO_RESET, её
+    #: счётчик только растёт и с номиналом не сравним. В JSON сессии не пишется.
+    traffic_managed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,13 +386,16 @@ class GraceAccessService:
             return GraceStartResult(GraceStartDecision.ALREADY_GRANTED, previous_session)
 
         now = _as_utc(self._clock())
-        if billing.used_traffic_bytes > panel_snapshot.used_traffic_bytes:
+        # У managed-подписки расход бота и счётчик панели в разных системах отсчёта
+        # (номинал против никогда не сбрасываемого счётчика) — не смешиваем: оверлей
+        # считается от настоящего счётчика панели, сброс — по учёту бота.
+        if not billing.traffic_managed and billing.used_traffic_bytes > panel_snapshot.used_traffic_bytes:
             panel_snapshot = replace(
                 panel_snapshot,
                 used_traffic_bytes=billing.used_traffic_bytes,
             )
         billing_before = billing
-        if panel_snapshot.used_traffic_bytes > billing.used_traffic_bytes:
+        if not billing.traffic_managed and panel_snapshot.used_traffic_bytes > billing.used_traffic_bytes:
             # Расход в бота приходит только синхронизацией, панель знает его сразу.
             # Запомни бот устаревший (вплоть до нуля) — сброс трафика потом не
             # отличить от «ничего не случилось», и grace по трафику висел бы до

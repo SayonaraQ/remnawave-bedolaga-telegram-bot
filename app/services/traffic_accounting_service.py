@@ -357,7 +357,9 @@ def _base_bytes(subscription):
     return max(0, (subscription.traffic_limit_gb or 0) - (subscription.purchased_traffic_gb or 0)) * 1024**3
 
 
-async def reconcile_account_locked(db, subscription, panel, *, now=None, refresh_calendar=True):
+async def reconcile_account_locked(
+    db, subscription, panel, *, now=None, refresh_calendar=True, refresh_during_grace=False
+):
     """Settle a fresh GET; expire grants; issue at most one current calendar base.
 
     The caller obtains lock_accounting_subscription before its GET and retains
@@ -400,7 +402,10 @@ async def reconcile_account_locked(db, subscription, panel, *, now=None, refresh
     if (
         refresh_calendar
         and state.phase == 'ready'
-        and not state.grace_excluded
+        # Форк: grace по трафику сам выдаёт базу 1-го числа (grace_access_runtime.
+        # _grant_managed_base_if_due) — иначе режим «без белых списков» держался бы
+        # до конца подписки. Расход за время grace по-прежнему не списывается.
+        and (not state.grace_excluded or refresh_during_grace)
         and state.next_refresh_at
         and _aware(state.next_refresh_at) <= moment
     ):
