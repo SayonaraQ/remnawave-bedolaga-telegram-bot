@@ -177,6 +177,19 @@ async def test_readding_admin_after_delete_journal_failure_republishes():
     assert bot.set_my_commands.await_count == 2
 
 
+@pytest.mark.parametrize('admin', [False, True])
+@pytest.mark.parametrize(('enabled', 'visible'), [(False, False), (True, False), (False, True), (True, True)])
+def test_contests_command_follows_main_menu_button(monkeypatch, admin, enabled, visible):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, 'CONTESTS_ENABLED', enabled)
+    monkeypatch.setattr(settings, 'CONTESTS_BUTTON_VISIBLE', visible)
+    commands = [command.command for command in build_menu('ru', admin=admin)]
+    assert ('contests' in commands) is (enabled and visible)
+    assert commands[0] == 'start'
+    assert ('admin_help' in commands) is admin
+
+
 @pytest.mark.parametrize('extension', ['json', 'yaml'])
 @pytest.mark.parametrize('language', ['de', 'es', 'pt-br', 'pt_BR'])
 def test_command_descriptions_use_operator_locales(tmp_path, monkeypatch, extension, language):
@@ -192,6 +205,8 @@ def test_command_descriptions_use_operator_locales(tmp_path, monkeypatch, extens
     # JSON is also valid YAML; both loader paths must work.
     (tmp_path / f'{language.lower()}.{extension}').write_text(json.dumps(translations))
     monkeypatch.setattr(bot_commands.settings, 'LOCALES_PATH', str(tmp_path))
+    monkeypatch.setattr(bot_commands.settings, 'CONTESTS_ENABLED', True)
+    monkeypatch.setattr(bot_commands.settings, 'CONTESTS_BUTTON_VISIBLE', True)
     clear_locale_cache()
     try:
         menu = build_menu(language, admin=True)

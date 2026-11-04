@@ -27,6 +27,12 @@ _FALLBACK_DESCRIPTIONS = (
 )
 
 
+def _contests_command_visible() -> bool:
+    # Same rule as the contests button in the main menu (app/keyboards/inline.py):
+    # an operator who hides the button must not get the command advertised instead.
+    return bool(settings.CONTESTS_ENABLED and settings.CONTESTS_BUTTON_VISIBLE)
+
+
 def build_menu(language: str, *, admin: bool = False) -> list[BotCommand]:
     language = language.strip().lower()
     language = 'ua' if language == 'uk' else language
@@ -34,6 +40,8 @@ def build_menu(language: str, *, admin: bool = False) -> list[BotCommand]:
     count = len(_COMMANDS) if admin else 2
     commands = []
     for name, fallback in zip(_COMMANDS[:count], _FALLBACK_DESCRIPTIONS[:count], strict=True):
+        if name == 'contests' and not _contests_command_visible():
+            continue
         description = texts.get(f'BOT_COMMAND_{name.upper()}', fallback)
         if not isinstance(description, str) or not 1 <= len(description.strip()) <= 256:
             description = fallback
