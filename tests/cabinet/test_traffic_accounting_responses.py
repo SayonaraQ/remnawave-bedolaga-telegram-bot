@@ -273,3 +273,47 @@ async def test_persisted_pending_mode_switch_reports_unknown(monkeypatch, old_li
         fields = helpers._traffic_accounting_response_fields(sub, result)
         assert fields['traffic_used_gb'] == 0
         assert fields['is_unlimited'] is (new_limit == 0)
+
+
+# Legacy-подписок у нас ~2500 из 2510: дату сброса им никто не называл, и кабинет
+# прятал строку «Следующий сброс трафика». Сбрасывает их панель по стратегии
+# тарифа — то же правило календаря, что ведёт managed (next_base_refresh).
+def _legacy_with_reset_mode(mode):
+    from app.database.models import Tariff
+
+    sub = subscription()
+    sub.tariff_id = 7
+    sub.tariff = Tariff(id=7, name='Стандарт', traffic_reset_mode=mode, daily_price_kopeks=0, is_daily=False)
+    return sub
+
+
+def test_legacy_month_names_the_panel_reset_moment():
+    before = datetime.now(UTC)
+    data = helpers._subscription_to_response(_legacy_with_reset_mode('MONTH')).model_dump()
+
+    reset = data['next_traffic_refresh_at']
+    assert data['traffic_accounting_mode'] == 'legacy'
+    assert reset is not None and reset > before
+    assert (reset.day, reset.hour, reset.minute) == (1, 0, 20)
+    assert reset - before < timedelta(days=32)
+
+
+@pytest.mark.parametrize('mode', ['NO_RESET', 'MONTH_ROLLING'])
+def test_legacy_does_not_invent_a_reset_date(mode):
+    # NO_RESET не сбрасывает; MONTH_ROLLING зависит от даты создания юзера в панели,
+    # которой в ответе нет, — дату не называем.
+    data = helpers._subscription_to_response(_legacy_with_reset_mode(mode)).model_dump()
+    assert data['next_traffic_refresh_at'] is None
+
+
+def test_unlimited_legacy_has_no_reset_date():
+    sub = _legacy_with_reset_mode('MONTH')
+    sub.traffic_limit_gb = 0
+    assert helpers._subscription_to_response(sub).model_dump()['next_traffic_refresh_at'] is None
+
+
+def test_trial_has_no_reset_date():
+    # Пробный период кончается раньше, чем панель сбросит трафик.
+    sub = _legacy_with_reset_mode('MONTH')
+    sub.is_trial = True
+    assert helpers._subscription_to_response(sub).model_dump()['next_traffic_refresh_at'] is None

@@ -293,4 +293,32 @@ def _subscription_to_response(
     if traffic_accounting is not None:
         fields = _traffic_accounting_response_fields(subscription, traffic_accounting)
         response = response.model_copy(update={k: v for k, v in fields.items() if k in type(response).model_fields})
+    if response.traffic_accounting_mode != 'managed' and response.next_traffic_refresh_at is None:
+        legacy_reset = _legacy_next_traffic_refresh(subscription, now)
+        if legacy_reset is not None:
+            response = response.model_copy(update={'next_traffic_refresh_at': legacy_reset})
     return response
+
+
+def _legacy_next_traffic_refresh(subscription: Subscription, now: datetime) -> datetime | None:
+    """Когда панель сама обнулит расход legacy-подписки: та же стратегия, что бот
+    отдаёт панели, и тот же календарь, что ведёт managed (``next_base_refresh``).
+
+    Без этой даты кабинет прятал строку «Следующий сброс трафика» у всех, кроме
+    горстки managed. Дату не называем у безлимита, триала (кончится раньше),
+    NO_RESET и MONTH_ROLLING — последнему нужна дата создания юзера в панели.
+    """
+    if subscription.is_trial or (subscription.traffic_limit_gb or 0) <= 0:
+        return None
+    from zoneinfo import ZoneInfo
+
+    from app.services.panel_sync.traffic_strategy import traffic_reset_strategy_name
+    from app.services.traffic_accounting_schedule import next_base_refresh
+
+    tariff = subscription.tariff if getattr(subscription, 'tariff_id', None) else None
+    strategy = traffic_reset_strategy_name(tariff)
+    if strategy not in {'DAY', 'WEEK', 'MONTH'}:
+        return None
+    return next_base_refresh(
+        strategy, now=now, anchor=now, timezone=ZoneInfo(settings.REMNAWAVE_TRAFFIC_RESET_TIMEZONE)
+    )

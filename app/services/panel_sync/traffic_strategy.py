@@ -24,6 +24,18 @@ _STRATEGY_BY_MODE = {
 }
 
 
+def traffic_reset_strategy_name(tariff=None) -> str:
+    """То же правило, что у ``get_traffic_reset_strategy``, строкой и без логов.
+
+    Для частых чтений (ответ кабинета на каждый запрос), где лог «стратегия из
+    тарифа» был бы шумом.
+    """
+    mode = getattr(tariff, 'traffic_reset_mode', None) if tariff is not None else None
+    if mode is None:
+        mode = settings.DEFAULT_TRAFFIC_RESET_STRATEGY
+    return _STRATEGY_BY_MODE.get(mode.upper(), 'NO_RESET')
+
+
 def get_traffic_reset_strategy(tariff=None) -> TrafficLimitStrategy:
     """Стратегия сброса трафика: настройка тарифа, иначе общая из конфига.
 
