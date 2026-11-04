@@ -54,6 +54,7 @@ from app.services.panel_sync import (
     project_onto_subscription,
     read_panel_user,
 )
+from app.services.traffic_accounting import AccountingMigrationInProgress
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button, build_subscription_extend_button
 
 
@@ -433,6 +434,21 @@ class RemnaWaveWebhookService:
         user_id = user.id
         try:
             await handler(db, user, subscription, data)
+            return True
+        except AccountingMigrationInProgress:
+            # Echo of the migration's own NO_RESET PATCH. The endpoint answers 200
+            # either way (no retry), and migration re-reads the panel when it
+            # commits ``managed``, so this event carries nothing to apply.
+            logger.info(
+                'RemnaWave webhook skipped: traffic accounting migration in progress',
+                event_name=event_name,
+                subscription_id=getattr(subscription, 'id', None),
+                user_id=user_id,
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                logger.debug('Rollback after skipped migration webhook failed')
             return True
         except (StaleDataError, PendingRollbackError):
             logger.warning(
@@ -1264,7 +1280,6 @@ class RemnaWaveWebhookService:
         if mode not in ('managed', 'migrating'):
             return None
         from app.services.subscription_service import SubscriptionService
-        from app.services.traffic_accounting import AccountingConflict
         from app.services.traffic_accounting_service import (
             _fresh_panel,
             lock_accounting_subscription,
@@ -1274,7 +1289,7 @@ class RemnaWaveWebhookService:
         from app.services.traffic_accounting_store import load_account
 
         if mode == 'migrating':
-            raise AccountingConflict('Traffic accounting migration is not complete')
+            raise AccountingMigrationInProgress('Traffic accounting migration is not complete')
         subscription, grace_open = await lock_accounting_subscription(db, subscription.id)
         async with SubscriptionService().get_api_client() as api:
             panel = await _fresh_panel(db, api, subscription)
@@ -1425,11 +1440,10 @@ class RemnaWaveWebhookService:
 
         mode = getattr(subscription, 'traffic_accounting_mode', None)
         if mode in ('managed', 'migrating'):
-            from app.services.traffic_accounting import AccountingConflict
             from app.services.traffic_accounting_service import refresh_managed_account
 
             if mode == 'migrating':
-                raise AccountingConflict('Traffic accounting migration is not complete')
+                raise AccountingMigrationInProgress('Traffic accounting migration is not complete')
             # Webhooks may be duplicated or delayed. Read actual cumulative usage;
             # a counter reset is never an entitlement grant or an enable request.
             await refresh_managed_account(db, subscription)

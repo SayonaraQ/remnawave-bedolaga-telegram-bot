@@ -14,6 +14,14 @@ class AccountingConflict(ValueError):
     """A counter or operation cannot be safely applied to this account."""
 
 
+class AccountingMigrationInProgress(AccountingConflict):
+    """The subscription is between the two migration transactions (``migrating``).
+
+    Expected for panel webhooks: migration PATCHes the panel to ``NO_RESET`` and
+    the panel answers with ``user.modified`` before ``managed`` is committed.
+    """
+
+
 @dataclass(frozen=True)
 class Allowance:
     key: str

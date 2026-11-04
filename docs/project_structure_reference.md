@@ -1898,7 +1898,7 @@
   Классы: нет
   Функции: `remaining_days_for_switch` — Сколько дней остатка оплачивать при переключении тарифа., `should_reset_used_traffic` — Обнулять ли счётчик трафика при переключении тарифа.
 - `app/services/traffic_accounting.py` — Python-модуль
-  Классы: `AccountingConflict`, `Allowance` (1 методов), `TrafficAccount` (4 методов)
+  Классы: `AccountingConflict`, `AccountingMigrationInProgress`, `Allowance` (1 методов), `TrafficAccount` (4 методов)
   Функции: `observe_usage` — Settle the next sample, then expire remainders; never create a debt., `refresh_base` — Replace the base allowance once per period/operation, preserving packages., `migrate_preserving_available` — Bootstrap a finite account without increasing or reducing available bytes.
 - `app/services/traffic_accounting_delivery.py` — Python-модуль
   Классы: нет
@@ -5908,6 +5908,9 @@
 - `tests/services/test_user_revival_service.py` — Python-модуль
   Классы: нет
   Функции: `db`, `test_revive_flips_status_to_active`, `test_revive_preserves_balance_and_referral_state` — The cabinet revival path is NOT a wipe — value-bearing fields stay., `test_revive_never_commits_caller_owns_transaction` — Architect's call: revive_deleted_user must NEVER commit., `test_revive_raises_when_already_active` — Misuse-guard: revive must NEVER silently no-op on ACTIVE rows., `test_revive_raises_on_blocked_user` — A BLOCKED admin-action row is a separate domain — revival is wrong here.
+- `tests/services/test_webhook_accounting_migration.py` — Python-модуль
+  Классы: нет
+  Функции: `test_migration_in_progress_is_still_an_accounting_conflict`, `test_migrating_subscription_raises_migration_in_progress`, `test_webhook_during_migration_is_skipped_without_error_report`, `test_other_accounting_conflicts_are_still_reported`
 - `tests/services/test_webhook_bandwidth_threshold.py` — Python-модуль
   Классы: нет
   Функции: `test_percent_comes_from_last_triggered_threshold`, `test_legacy_threshold_percent_field_still_accepted`, `test_zero_last_triggered_threshold_is_not_a_percent` — 0 — «порог ещё не срабатывал»; показывать «0%» нельзя, берём запасное значение.
