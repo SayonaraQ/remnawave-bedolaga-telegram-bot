@@ -1568,6 +1568,9 @@
 - `app/services/device_limit_overflow.py` — Python-модуль
   Классы: `DeviceOverflow` (1 методов)
   Функции: `find_device_overflows` — Подписки, где устройств в панели больше лимита; без лимита (0 / пусто) не проверяются., `load_checked_subscriptions`, `select_unreported` — Новые случаи и те, у которых сменилось число устройств или лимит., `mark_reported`, `check_device_limit_overflows` — Одна проверка: найти превышения, отправить новые админам. Возвращает число доставленных случаев.
+- `app/services/device_names_refresh.py` — Python-модуль
+  Классы: нет
+  Функции: `download_source`, `refresh_device_names` — Обновить справочник, если устарел. Возвращает fresh / updated / rejected / failed., `run_device_names_refresh` — Фоновая задача: первая проверка через 5 минут после старта, дальше раз в сутки.
 - `app/services/disposable_email_service.py` — Python-модуль
   Классы: `DisposableEmailService` (7 методов)
   Функции: `parse_extra_domains` — Список оператора из настройки: любые разделители, регистр и ведущие '@'/'.' не важны., `domain_and_parents` — 'deep.sub.mail.tm' → 'deep.sub.mail.tm', 'sub.mail.tm', 'mail.tm' (голый TLD не считается).
@@ -2342,7 +2345,7 @@
 - `app/utils/device_names.json.gz` — файл
 - `app/utils/device_names.py` — Python-модуль
   Классы: нет
-  Функции: `marketing_name`
+  Функции: `parse_csv` — Список Google Play приходит в UTF-16 с BOM; на всякий случай понимаем и UTF-8., `build_names` — Код модели (нижний регистр) → название с брендом («Samsung Galaxy A55 5G»)., `encode_names` — Детерминированный gzip: одинаковые данные — байт-в-байт один файл., `marketing_name`
 - `app/utils/display_mode.py` — Python-модуль
   Классы: нет
   Функции: `normalize_display_mode`, `is_visible_in_bot`, `is_visible_in_web`, `next_display_mode`, `display_mode_label`
@@ -3277,7 +3280,7 @@
 - `scripts/pg-upgrade.sh` — файл
 - `scripts/update_device_names.py` — Python-модуль
   Классы: нет
-  Функции: `read_rows`, `build`, `main`
+  Функции: `main`
 
 ## tests
 
@@ -5246,6 +5249,9 @@
 - `tests/services/test_device_limit_overflow.py` — Python-модуль
   Классы: `DictCache` (3 методов)
   Функции: `overflow_settings`, `fake_cache`, `test_reports_only_subscriptions_above_their_limit`, `test_unlimited_subscription_is_not_checked`, `test_active_devices_counted_by_last_update`, `test_multi_tariff_uses_subscription_panel_user`, `test_largest_overflow_first`, `test_case_is_reported_once_until_it_changes`, `test_check_sends_unreported_and_remembers_them`, `test_check_is_skipped_when_addons_notifications_are_off`, `test_failed_send_is_not_marked_reported`, `test_short_summary_is_one_message`, `test_every_case_reaches_admins_in_parts` — 30 случаев с самыми длинными именами — все доходят до админа, каждая часть в лимите Telegram., `test_long_names_fit_plain_send_when_rich_is_unavailable` — Обычная отправка (rich выключен или недоступен) — Telegram отклоняет текст длиннее 4096., `test_undelivered_part_stays_a_candidate` — Сбой одной из частей: её случаи не помечаются показанными и приходят в следующей проверке.
+- `tests/services/test_device_names_refresh.py` — Python-модуль
+  Классы: нет
+  Функции: `write_names`, `data_file`, `test_downloads_when_there_is_no_refreshed_file`, `test_leaves_a_fresh_file_alone`, `test_replaces_a_month_old_file`, `test_keeps_the_old_file_when_the_download_looks_truncated`, `test_keeps_the_old_file_when_the_download_fails`, `test_falls_back_to_the_bundled_names_when_the_file_is_broken`
 - `tests/services/test_disposable_email_service.py` — Python-модуль
   Классы: нет
   Функции: `test_parse_extra_domains_tolerates_separators_case_and_at_sign`, `test_operator_extra_domains_block_even_without_fetched_list`, `test_parent_domain_matches_for_both_lists`, `test_disabled_flag_and_malformed_email`

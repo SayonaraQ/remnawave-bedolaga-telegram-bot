@@ -24,6 +24,7 @@ from app.services.bot_commands import CommandMenuStore, CommandMenuSync
 from app.services.broadcast_service import broadcast_service
 from app.services.contest_rotation_service import contest_rotation_service
 from app.services.daily_subscription_service import daily_subscription_service
+from app.services.device_names_refresh import run_device_names_refresh
 from app.services.dpichecker.service import dpichecker_service
 from app.services.grace_access_runtime import grace_access_runtime
 from app.services.log_rotation_service import log_rotation_service
@@ -198,6 +199,7 @@ async def main():
     monitoring_task = None
     maintenance_task = None
     version_check_task = None
+    device_names_task = None
     traffic_monitoring_task = None
     daily_subscription_task = None
     polling_task = None
@@ -794,6 +796,10 @@ async def main():
                 version_check_task = None
                 stage.skip('Проверка версий отключена настройками')
 
+        # Справочник названий устройств для кабинета («25102PCBEG» → «POCO F8 Ultra»):
+        # раз в сутки проверяет data/device_names.json.gz и перекачивает его раз в месяц.
+        device_names_task = asyncio.create_task(run_device_names_refresh())
+
         async with timeline.stage(
             'Запуск polling',
             '🤖',
@@ -1018,6 +1024,8 @@ async def main():
             except asyncio.CancelledError:
                 pass
 
+        if device_names_task and not device_names_task.done():
+            device_names_task.cancel()
         if version_check_task and not version_check_task.done():
             logger.info('ℹ️ Остановка сервиса проверки версий...')
             version_check_task.cancel()
