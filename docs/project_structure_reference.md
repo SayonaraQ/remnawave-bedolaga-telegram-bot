@@ -2339,6 +2339,10 @@
 - `app/utils/decorators.py` — Python-модуль
   Классы: нет
   Функции: `admin_required`, `auth_required` — Простая проверка на наличие пользователя в апдейте. Middleware уже подтягивает db_user,, `error_handler`, `state_cleanup`, `typing_action`, `rate_limit`
+- `app/utils/device_names.json.gz` — файл
+- `app/utils/device_names.py` — Python-модуль
+  Классы: нет
+  Функции: `marketing_name`
 - `app/utils/display_mode.py` — Python-модуль
   Классы: нет
   Функции: `normalize_display_mode`, `is_visible_in_bot`, `is_visible_in_web`, `next_display_mode`, `display_mode_label`
@@ -3271,6 +3275,9 @@
   Классы: нет
   Функции: `tracked_paths` — Файлы проекта: отслеживаемые плюс новые, которые git не игнорирует., `describe_module` — Строки «Классы:» и «Функции:» для модуля., `render_entries`, `render`, `build`, `main`
 - `scripts/pg-upgrade.sh` — файл
+- `scripts/update_device_names.py` — Python-модуль
+  Классы: нет
+  Функции: `read_rows`, `build`, `main`
 
 ## tests
 
@@ -6182,6 +6189,9 @@
 - `tests/utils/test_decorator_localization.py` — Python-модуль
   Классы: нет
   Функции: `test_denied_admin_action_uses_account_language_without_calling_handler`, `test_error_message_uses_positional_account_or_telegram_language`
+- `tests/utils/test_device_names.py` — Python-модуль
+  Классы: нет
+  Функции: `test_translates_model_codes`, `test_leaves_names_it_cannot_improve`
 - `tests/utils/test_display_mode.py` — Python-модуль
   Классы: нет
   Функции: `test_normalize_display_mode_known_values`, `test_normalize_display_mode_fallback_to_both`, `test_visibility_matrix`, `test_next_display_mode_cycles_through_all_modes`, `test_display_mode_label_known_for_all_modes`, `test_config_defaults_are_both`, `test_settings_registered_in_info_pages_category`

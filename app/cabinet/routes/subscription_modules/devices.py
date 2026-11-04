@@ -39,6 +39,7 @@ from app.services.panel_sync import should_create_panel_account
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.client_app import client_app_from_user_agent
+from app.utils.device_names import marketing_name
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import DevicePurchaseRequest
@@ -1018,6 +1019,9 @@ async def get_devices(
                         # Приложение, через которое HWID пришёл за подпиской
                         # (Happ, INCY, …): кабинет показывает его в слоте.
                         'app': client_app_from_user_agent(device.get('userAgent')),
+                        # Название по коду модели («25102PCBEG» → «POCO F8 Ultra»);
+                        # None — справочник модель не знает, кабинет покажет код.
+                        'device_name': marketing_name(platform, model),
                     }
                 )
 
