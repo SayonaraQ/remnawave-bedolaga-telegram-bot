@@ -2330,6 +2330,9 @@
 - `app/utils/check_reg_process.py` — Python-модуль
   Классы: нет
   Функции: `is_registration_process`
+- `app/utils/client_app.py` — Python-модуль
+  Классы: нет
+  Функции: `client_app_from_user_agent`
 - `app/utils/currency_converter.py` — Python-модуль
   Классы: `CurrencyConverter` (8 методов)
   Функции: нет
@@ -6170,6 +6173,9 @@
 - `tests/utils/test_chat_menu_button.py` — Python-модуль
   Классы: нет
   Функции: `test_disabled_does_not_touch_menu_button`, `test_enabled_sets_webapp_menu_button`, `test_falls_back_to_miniapp_custom_url`, `test_non_https_url_is_skipped`, `test_empty_text_defaults`
+- `tests/utils/test_client_app.py` — Python-модуль
+  Классы: нет
+  Функции: `test_takes_the_product_token`, `test_returns_none_when_nothing_to_show`, `test_caps_length`
 - `tests/utils/test_codeql_input_boundaries.py` — Python-модуль
   Классы: нет
   Функции: `parsing_deadline`, `test_unterminated_escaped_metric_label_is_bounded`, `test_unterminated_long_tag_is_bounded`, `test_unterminated_rich_blocks_are_bounded`, `test_article_sanitization_removes_executable_markup`, `test_metric_label_escapes_and_adjacent_labels_still_parse`, `test_rich_segmentation_preserves_existing_short_input_semantics`, `test_blacklist_conversion_uses_parsed_host_and_blob_path`, `test_article_keeps_editor_formatting_and_uploaded_media`, `test_article_preserves_trusted_embeds_with_forced_sandbox`, `test_article_removes_untrusted_embed_source`, `test_legacy_article_response_is_sanitized_without_rewriting_storage`

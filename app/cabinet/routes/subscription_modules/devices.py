@@ -38,6 +38,7 @@ from app.database.models import Subscription, TransactionType, User
 from app.services.panel_sync import should_create_panel_account
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
+from app.utils.client_app import client_app_from_user_agent
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import DevicePurchaseRequest
@@ -1014,6 +1015,9 @@ async def get_devices(
                         # Локальное имя, заданное юзером. None — алиаса нет,
                         # фронт фоллбэчит на platform/device_model.
                         'local_name': aliases.get(hwid) or None,
+                        # Приложение, через которое HWID пришёл за подпиской
+                        # (Happ, INCY, …): кабинет показывает его в слоте.
+                        'app': client_app_from_user_agent(device.get('userAgent')),
                     }
                 )
 
