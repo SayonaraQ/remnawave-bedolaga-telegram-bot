@@ -56,6 +56,9 @@ class SubscriptionData(TrafficAccountingData):
     servers: list[ServerInfo] = []  # Server display info
     autopay_enabled: bool
     autopay_days_before: int
+    # subscription.autopay_period_days как есть: monitoring_service._process_autopayments
+    # берёт его первым; при None — дефолт настроек, затем самый короткий период тарифа.
+    autopay_period_days: int | None = None
     subscription_url: str | None = None
     hide_subscription_link: bool = False  # Скрывать ли отображение ссылки (но кнопки работают)
     is_active: bool

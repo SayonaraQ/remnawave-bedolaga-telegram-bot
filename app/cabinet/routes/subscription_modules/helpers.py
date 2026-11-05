@@ -275,6 +275,7 @@ def _subscription_to_response(
         servers=servers or [],
         autopay_enabled=subscription.autopay_enabled or False,
         autopay_days_before=subscription.autopay_days_before or 3,
+        autopay_period_days=getattr(subscription, 'autopay_period_days', None),
         subscription_url=subscription.subscription_url,
         hide_subscription_link=hide_link,
         is_active=is_active,
