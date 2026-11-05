@@ -29,6 +29,16 @@ class PurchaseDeviceSelection:
     reason: str | None
 
 
+def effective_max_device_limit(tariff, device_price_kopeks: int) -> int | None:
+    """Return the purchase ceiling when the displayed price allows extra devices."""
+    included = tariff.device_limit if tariff.device_limit is not None else 1
+    configured_max = tariff.max_device_limit or settings.MAX_DEVICES_LIMIT
+    maximum = min(configured_max, MAX_DEVICE_LIMIT) if configured_max > 0 else MAX_DEVICE_LIMIT
+    if device_price_kopeks <= 0 or included == 0 or maximum <= included:
+        return None
+    return maximum
+
+
 def resolve_purchase_device_selection(
     tariff, subscription, selected_device_limit: int | None
 ) -> PurchaseDeviceSelection:

@@ -51,6 +51,7 @@ from app.services.subscription_purchase_service import (
     PurchaseValidationError,
 )
 from app.services.subscription_service import SubscriptionService
+from app.services.tariff_purchase_devices import effective_max_device_limit
 from app.services.traffic_reset_policy import should_reset_traffic_on_tariff_purchase
 from app.services.user_cart_service import user_cart_service
 from app.utils.pricing_utils import (
@@ -60,6 +61,7 @@ from app.utils.pricing_utils import (
     format_period_description,
 )
 from app.utils.subscription_utils import resolve_tariff_purchase_device_limit
+from app.utils.tariff_common_features import parse_tariff_common_features
 from app.utils.timezone import format_local_datetime
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
@@ -305,6 +307,9 @@ async def _build_tariff_response(
         'id': tariff.id,
         'name': tariff.name,
         'description': tariff.description,
+        'tagline': tariff.tagline,
+        'speed_limit_mbps': tariff.speed_limit_mbps,
+        'has_premium_servers': bool(tariff.has_premium_servers),
         # Тариф отмечен оператором как выгодный: кабинет обводит карточку рамкой,
         # бот ставит подпись в кнопке списка.
         'is_highlighted': bool(tariff.is_highlighted),
@@ -317,6 +322,7 @@ async def _build_tariff_response(
         'base_device_limit': tariff.device_limit,
         'extra_devices_count': extra_devices_count,
         'device_price_kopeks': device_price,
+        'max_device_limit': effective_max_device_limit(tariff, device_price),
         'servers_count': servers_count,
         'servers': servers,
         'periods': periods,
@@ -461,6 +467,7 @@ async def get_purchase_options(
             return {
                 'sales_mode': 'tariffs',
                 'tariffs': tariff_responses,
+                'common_features': parse_tariff_common_features(settings.TARIFF_COMMON_FEATURES),
                 'current_tariff_id': current_tariff_id,
                 'balance_kopeks': user.balance_kopeks,
                 'balance_label': settings.format_price(user.balance_kopeks),

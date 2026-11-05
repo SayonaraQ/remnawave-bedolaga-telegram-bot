@@ -369,6 +369,7 @@ class BotConfigurationService:
         'DEFAULT_DEVICE_LIMIT': 'SUBSCRIPTIONS_CORE',
         'DEFAULT_TRAFFIC_LIMIT_GB': 'SUBSCRIPTIONS_CORE',
         'MAX_DEVICES_LIMIT': 'SUBSCRIPTIONS_CORE',
+        'TARIFF_COMMON_FEATURES': 'SUBSCRIPTIONS_CORE',
         # Без явной привязки ключ уехал бы в автокатегорию «ALLOW» (категория берётся
         # из первого слова), где его никто не найдёт: искать его будут рядом с
         # MAX_DEVICES_LIMIT и PRICE_PER_DEVICE.
@@ -756,6 +757,12 @@ class BotConfigurationService:
     }
 
     SETTING_HINTS: dict[str, dict[str, str]] = {
+        'TARIFF_COMMON_FEATURES': {
+            'description': 'Пункты блока «Во всех тарифах» в кабинете: по строке «значок: текст», '
+            'значки globe, youtube, infinity, plus, check.',
+            'format': 'Пункты через перевод строки или ;. До 8 пунктов, текст до 80 символов.',
+            'example': 'globe: Все локации; youtube: YouTube без рекламы',
+        },
         'CISPAY_RECURRENT_ENABLED': {
             'description': 'Автопродление тарифов через СБП CisPay в боте и кабинете.',
             'format': 'Булево значение (да/нет).',
