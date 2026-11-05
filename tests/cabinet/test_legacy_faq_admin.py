@@ -94,6 +94,33 @@ async def check_legacy_faq(db):
         )
         assert missing.status_code == 404
 
+        await check_legacy_faq_category(client, page.id)
+
+
+async def check_legacy_faq_category(client, page_id):
+    """Тема вопроса: ставится, переживает PUT без поля, снимается null, мусор — 422."""
+    body = {'title': 'Q', 'content': '<p>A</p>', 'is_active': True, 'display_order': 7}
+    url = f'/cabinet/admin/info-pages/legacy-faq/{page_id}'
+
+    tagged = await client.put(url, json={**body, 'category': 'trouble'})
+    assert tagged.status_code == 200 and tagged.json()['category'] == 'trouble'
+    public = (await client.get('/cabinet/info/faq?language=ru')).json()
+    assert [p['category'] for p in public if p['id'] == page_id] == ['trouble']
+    single = (await client.get(f'/cabinet/info/faq/{page_id}?language=ru')).json()
+    assert single['category'] == 'trouble'
+
+    kept = await client.put(url, json=body)  # старый кабинет поле не шлёт
+    assert kept.json()['category'] == 'trouble'
+
+    for bad in ('Оплата', 'Trouble', 'x' * 40):
+        rejected = await client.put(url, json={**body, 'category': bad})
+        assert rejected.status_code == 422
+    listed = (await client.get('/cabinet/admin/info-pages/legacy-faq')).json()
+    assert [p['category'] for p in listed if p['id'] == page_id] == ['trouble']
+
+    cleared = await client.put(url, json={**body, 'category': None})
+    assert cleared.json()['category'] is None
+
 
 @pytest.mark.parametrize(
     ('method', 'path', 'permission'),

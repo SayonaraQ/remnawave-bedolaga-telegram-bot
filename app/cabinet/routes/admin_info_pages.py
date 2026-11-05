@@ -84,7 +84,7 @@ async def update_legacy_faq(
     page = await get_faq_page_by_id(db, page_id)
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='FAQ page not found')
-    page = await FaqService.update_page(db, page, **request.model_dump())
+    page = await FaqService.update_page(db, page, **request.model_dump(exclude_unset=True))
     setting = await FaqService.get_setting(db, page.language, fallback=False)
     return LegacyFaqResponse.model_validate(page).model_copy(
         update={'is_enabled': setting.is_enabled if setting else True}

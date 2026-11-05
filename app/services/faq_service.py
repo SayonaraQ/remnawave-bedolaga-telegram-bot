@@ -187,7 +187,7 @@ class FaqService:
         content: str | None = None,
         display_order: int | None = None,
         is_active: bool | None = None,
-        category: str | None | object = UNSET,
+        category: str | object | None = UNSET,
     ) -> FaqPage:
         return await update_faq_page(
             db,

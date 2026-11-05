@@ -21,7 +21,7 @@ def test_faq_category_sqlite_upgrade_downgrade_keeps_rows():
         )
         connection.execute(
             text(
-                "INSERT INTO faq_pages (id, language, title, content, display_order, is_active) "
+                'INSERT INTO faq_pages (id, language, title, content, display_order, is_active) '
                 "VALUES (9, 'ru', 'Что делать, если VPN не работает?', '<p>x</p>', 5, 1)"
             )
         )
@@ -34,5 +34,7 @@ def test_faq_category_sqlite_upgrade_downgrade_keeps_rows():
             migration.downgrade()
             assert 'category' not in _columns(connection)
             migration.upgrade()
-        assert connection.scalar(text('SELECT title FROM faq_pages WHERE id = 9')) == 'Что делать, если VPN не работает?'
+        assert (
+            connection.scalar(text('SELECT title FROM faq_pages WHERE id = 9')) == 'Что делать, если VPN не работает?'
+        )
     engine.dispose()

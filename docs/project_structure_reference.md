@@ -2821,7 +2821,12 @@
 
 ### docs/superpowers
 
+- `docs/superpowers/plans/`
 - `docs/superpowers/specs/`
+
+#### docs/superpowers/plans
+
+- `docs/superpowers/plans/2026-11-05-faq-categories.md` — файл
 
 #### docs/superpowers/specs
 
@@ -3261,6 +3266,9 @@
 - `migrations/alembic/versions/0140_cispay_subscriptions.py` — Python-модуль
   Классы: нет
   Функции: `upgrade`, `downgrade`
+- `migrations/alembic/versions/0141_faq_page_category.py` — Python-модуль
+  Классы: нет
+  Функции: `upgrade`, `downgrade`
 
 ## scripts
 
@@ -3482,7 +3490,7 @@
   Функции: нет
 - `tests/cabinet/test_admin_legal_pages_routes.py` — Python-модуль
   Классы: нет
-  Функции: `test_admin_legal_pages_routes_registered`, `test_legal_responses_expose_env_lock_flag`, `test_set_display_mode_commits`, `test_set_display_mode_env_locked_conflict`, `test_set_display_mode_env_locked_same_value_allowed`, `test_require_language_rejects_unknown`
+  Функции: `test_admin_legal_pages_routes_registered`, `test_legal_responses_expose_env_lock_flag`, `test_legal_faq_page_schemas_carry_category`, `test_set_display_mode_commits`, `test_set_display_mode_env_locked_conflict`, `test_set_display_mode_env_locked_same_value_allowed`, `test_require_language_rejects_unknown`
 - `tests/cabinet/test_admin_overpay_certificate_routes.py` — Python-модуль
   Классы: нет
   Функции: `p12_bytes`, `stubbed_service`, `test_admin_overpay_certificate_routes_registered`, `test_upload_certificate_commits`, `test_upload_certificate_env_locked_warning`, `test_upload_certificate_invalid_returns_422`, `test_upload_certificate_oversize_returns_413`, `test_delete_certificate_commits`
@@ -3701,7 +3709,7 @@
   Функции: `user`, `test_enable_gated_before_touching_db`, `test_get_gated_before_touching_db`, `test_cancel_works_even_when_gate_off` — Отмена — операция безопасности, флагом не гейтится., `test_enable_rejects_trial_subscription`, `test_enable_surfaces_missing_product_reason` — У тарифа не задан продукт Lava — причина доходит до пользователя., `test_enable_returns_payment_url`, `test_get_returns_none_status_without_binding`, `test_get_returns_binding_state`, `test_purchase_gated_and_maps_errors` — Покупка привязкой: гейт фичи, отказы доносятся как 400., `test_purchase_returns_payment_url_and_subscription`
 - `tests/cabinet/test_legacy_faq_admin.py` — Python-модуль
   Классы: нет
-  Функции: `test_legacy_faq_list_edit_keeps_public_and_bot_content_in_sync`, `test_legacy_faq_edit_postgres`, `check_legacy_faq`, `test_legacy_faq_requires_server_permission`
+  Функции: `test_legacy_faq_list_edit_keeps_public_and_bot_content_in_sync`, `test_legacy_faq_edit_postgres`, `check_legacy_faq`, `check_legacy_faq_category` — Тема вопроса: ставится, переживает PUT без поля, снимается null, мусор — 422., `test_legacy_faq_requires_server_permission`
 - `tests/cabinet/test_linked_providers_forgets_email.py` — Python-модуль
   Классы: нет
   Функции: `test_google_row_names_the_email_that_unlinking_forgets`, `test_nothing_is_forgotten_once_a_password_exists`, `test_email_verified_elsewhere_is_not_tied_to_the_provider`
@@ -5054,6 +5062,9 @@
 - `tests/migrations/test_0140_cispay_sqlite.py` — Python-модуль
   Классы: нет
   Функции: `test_cispay_sqlite_upgrade_downgrade_preserves_existing_rows`
+- `tests/migrations/test_0141_faq_category.py` — Python-модуль
+  Классы: нет
+  Функции: `test_faq_category_sqlite_upgrade_downgrade_keeps_rows`
 
 ### tests/services
 
@@ -5273,6 +5284,9 @@
 - `tests/services/test_expiry_asks_the_panel_first.py` — Python-модуль
   Классы: нет
   Функции: `test_alive_in_the_panel_is_not_expired_and_takes_the_panel_date`, `test_expired_in_the_panel_is_expired_in_the_bot`, `test_silent_panel_falls_back_to_the_bot_date` — Панель не отвечает — последняя известная истина у бота, гасим по ней., `test_open_grace_overlay_is_not_taken_for_a_panel_renewal`, `test_grace_tail_left_in_the_panel_is_not_a_renewal_either` — После конца грейса панель ещё несколько минут ACTIVE с погашенной датой.
+- `tests/services/test_faq_category.py` — Python-модуль
+  Классы: нет
+  Функции: `test_create_stores_category_and_update_keeps_it_unless_passed`, `test_create_without_category_stores_null`
 - `tests/services/test_format_email_datetime.py` — Python-модуль
   Классы: нет
   Функции: `test_default_format_is_locale_independent` — The fallback shape must be ``DD.MM.YYYY, HH:MM`` — no month, `test_explicit_fmt_arg_overrides_settings` — Caller-provided ``fmt`` wins over the global setting — lets, `test_settings_override_takes_effect_without_restart` — An admin who updates ``EMAIL_DATE_FORMAT`` via system_settings, `test_empty_or_invalid_setting_falls_back_to_default` — Operator misconfiguration (empty / non-string) must not crash, `test_localizes_to_configured_timezone` — UTC datetime gets shifted to ``settings.TIMEZONE`` before formatting., `test_naive_datetime_is_treated_as_utc` — Some legacy paths still pass naive datetimes. Treat them as, `test_iso_string_is_parsed_and_reformatted` — Legacy callers that pre-isoformat'd their datetime get parsed, `test_unparseable_string_passes_through` — If the caller pre-formatted the string in some custom shape we, `test_empty_input_returns_placeholder` — ``None`` / empty must not render the literal Python repr or, `test_custom_placeholder_respected`, `test_non_datetime_non_string_input_returns_placeholder` — Garbage input (int, list, etc.) → placeholder. Defensive., `test_no_microseconds_in_output` — REGRESSION (2026-05-18): user saw, `test_no_offset_in_output` — Non-UTC TZ values also must not leak the offset into the email., `test_notification_delivery_service_uses_format_email_datetime` — ``notify_subscription_expiring`` and ``notify_autopay_success``, `test_auto_purchase_service_sends_machine_dates_to_the_cabinet` — Даты в WebSocket-событиях кабинета — не для человека., `test_helper_signature_is_stable` — The helper is called from 9+ production sites. Lock its

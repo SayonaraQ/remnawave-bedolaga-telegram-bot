@@ -82,6 +82,10 @@ class ReorderRequest(BaseModel):
     items: list[ReorderItem] = Field(..., min_length=1)
 
 
+# Ключ темы вопроса FAQ: подписи живут в кабинете, бот хранит только ключ.
+FAQ_CATEGORY_PATTERN = r'^[a-z][a-z0-9_-]{0,31}$'
+
+
 class LegacyFaqResponse(BaseModel):
     """A bot FAQ page, kept in its original language and ID namespace."""
 
@@ -92,6 +96,7 @@ class LegacyFaqResponse(BaseModel):
     display_order: int
     is_active: bool
     is_enabled: bool = True
+    category: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -101,3 +106,5 @@ class LegacyFaqUpdateRequest(BaseModel):
     content: str
     display_order: int = Field(ge=0)
     is_active: bool
+    # Не передано — тема остаётся прежней (старые сборки кабинета поле не шлют); null — снять.
+    category: str | None = Field(None, pattern=FAQ_CATEGORY_PATTERN)

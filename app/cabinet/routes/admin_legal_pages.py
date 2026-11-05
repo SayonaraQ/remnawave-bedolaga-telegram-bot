@@ -32,6 +32,7 @@ from app.services.system_settings_service import bot_configuration_service
 from app.utils.display_mode import normalize_display_mode
 
 from ..dependencies import get_cabinet_db, require_permission
+from ..schemas.info_pages import FAQ_CATEGORY_PATTERN
 
 
 logger = structlog.get_logger(__name__)
@@ -154,6 +155,7 @@ class FaqPageItem(BaseModel):
     display_order: int
     is_active: bool
     updated_at: str | None = None
+    category: str | None = None
 
 
 class FaqResponse(BaseModel):
@@ -174,6 +176,7 @@ class FaqPageCreateRequest(BaseModel):
     content: str = ''
     display_order: int | None = Field(None, ge=0)
     is_active: bool = True
+    category: str | None = Field(None, pattern=FAQ_CATEGORY_PATTERN)
 
 
 class FaqPageUpdateRequest(BaseModel):
@@ -181,6 +184,7 @@ class FaqPageUpdateRequest(BaseModel):
     content: str | None = None
     display_order: int | None = Field(None, ge=0)
     is_active: bool | None = None
+    category: str | None = Field(None, pattern=FAQ_CATEGORY_PATTERN)
 
 
 def _faq_page_item(page: FaqPage) -> FaqPageItem:
@@ -192,6 +196,7 @@ def _faq_page_item(page: FaqPage) -> FaqPageItem:
         display_order=page.display_order or 0,
         is_active=page.is_active,
         updated_at=page.updated_at.isoformat() if page.updated_at else None,
+        category=page.category,
     )
 
 
@@ -456,6 +461,7 @@ async def create_faq_page_admin(
         content=request.content,
         display_order=request.display_order,
         is_active=request.is_active,
+        category=request.category,
     )
     logger.info('Admin created FAQ page via cabinet', admin_id=admin.id, page_id=page.id)
     return _faq_page_item(page)
@@ -481,6 +487,7 @@ async def update_faq_page_admin(
         content=request.content,
         display_order=request.display_order,
         is_active=request.is_active,
+        **({'category': request.category} if 'category' in request.model_fields_set else {}),
     )
     logger.info('Admin updated FAQ page via cabinet', admin_id=admin.id, page_id=page_id)
     return _faq_page_item(updated)

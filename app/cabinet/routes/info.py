@@ -71,6 +71,7 @@ class FaqPageResponse(BaseModel):
     title: str
     content: str
     order: int
+    category: str | None = None
 
 
 class RulesResponse(BaseModel):
@@ -162,6 +163,7 @@ async def get_faq_pages(
             title=page.title,
             content=page.content or '',
             order=page.display_order or 0,
+            category=page.category,
         )
         for page in pages
     ]
@@ -199,6 +201,7 @@ async def get_faq_page(
         title=page.title,
         content=page.content or '',
         order=page.display_order or 0,
+        category=page.category,
     )
 
 

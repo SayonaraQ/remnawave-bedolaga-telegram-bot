@@ -24,6 +24,34 @@ def test_legal_responses_expose_env_lock_flag():
         assert 'display_mode_env_locked' in model.model_fields
 
 
+def test_legal_faq_page_schemas_carry_category():
+    from pydantic import ValidationError
+
+    from app.cabinet.routes.admin_legal_pages import (
+        FaqPageCreateRequest,
+        FaqPageUpdateRequest,
+        _faq_page_item,
+    )
+
+    created = FaqPageCreateRequest(language='ru', title='Q', category='billing')
+    assert created.category == 'billing'
+    assert 'category' not in FaqPageUpdateRequest(title='Q').model_dump(exclude_unset=True)
+    with pytest.raises(ValidationError):
+        FaqPageCreateRequest(language='ru', title='Q', category='Оплата')
+
+    page = SimpleNamespace(
+        id=1,
+        language='ru',
+        title='Q',
+        content='A',
+        display_order=1,
+        is_active=True,
+        category='billing',
+        updated_at=None,
+    )
+    assert _faq_page_item(page).category == 'billing'
+
+
 @pytest.mark.asyncio
 async def test_set_display_mode_commits(monkeypatch):
     from app.cabinet.routes import admin_legal_pages

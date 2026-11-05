@@ -113,7 +113,7 @@ async def update_faq_page(
     content: str | None = None,
     display_order: int | None = None,
     is_active: bool | None = None,
-    category: str | None | object = UNSET,
+    category: str | object | None = UNSET,
 ) -> FaqPage:
     if title is not None:
         page.title = title
