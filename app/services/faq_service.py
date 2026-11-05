@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.faq import (
+    UNSET,
     bulk_update_order,
     create_faq_page,
     delete_faq_page,
@@ -156,6 +157,7 @@ class FaqService:
         content: str,
         display_order: int | None = None,
         is_active: bool | None = None,
+        category: str | None = None,
     ) -> FaqPage:
         lang = cls._normalize_language(language)
         is_active_value = True if is_active is None else bool(is_active)
@@ -166,6 +168,7 @@ class FaqService:
             content=content,
             display_order=display_order,
             is_active=is_active_value,
+            category=category,
         )
 
         setting = await get_faq_setting(db, lang)
@@ -184,6 +187,7 @@ class FaqService:
         content: str | None = None,
         display_order: int | None = None,
         is_active: bool | None = None,
+        category: str | None | object = UNSET,
     ) -> FaqPage:
         return await update_faq_page(
             db,
@@ -192,6 +196,7 @@ class FaqService:
             content=content,
             display_order=display_order,
             is_active=is_active,
+            category=category,
         )
 
     @classmethod

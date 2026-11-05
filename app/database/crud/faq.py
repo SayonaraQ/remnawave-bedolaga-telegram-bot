@@ -10,6 +10,10 @@ from app.database.models import FaqPage, FaqSetting
 
 logger = structlog.get_logger(__name__)
 
+# «Не передано»: у темы вопроса None — осмысленное значение (снять тему), поэтому
+# пропущенный аргумент отличаем отдельным маркером.
+UNSET: object = object()
+
 
 async def get_faq_setting(db: AsyncSession, language: str) -> FaqSetting | None:
     result = await db.execute(select(FaqSetting).where(FaqSetting.language == language))
@@ -76,6 +80,7 @@ async def create_faq_page(
     content: str,
     display_order: int | None = None,
     is_active: bool = True,
+    category: str | None = None,
 ) -> FaqPage:
     if display_order is None:
         result = await db.execute(select(func.max(FaqPage.display_order)).where(FaqPage.language == language))
@@ -88,6 +93,7 @@ async def create_faq_page(
         content=content,
         display_order=display_order,
         is_active=is_active,
+        category=category,
     )
 
     db.add(page)
@@ -107,6 +113,7 @@ async def update_faq_page(
     content: str | None = None,
     display_order: int | None = None,
     is_active: bool | None = None,
+    category: str | None | object = UNSET,
 ) -> FaqPage:
     if title is not None:
         page.title = title
@@ -116,6 +123,8 @@ async def update_faq_page(
         page.display_order = display_order
     if is_active is not None:
         page.is_active = bool(is_active)
+    if category is not UNSET:
+        page.category = category
 
     page.updated_at = datetime.now(UTC)
 

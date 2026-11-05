@@ -3912,6 +3912,8 @@ class FaqPage(Base):
     content = Column(Text, nullable=False)
     display_order = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Тема вопроса для справки кабинета (connect, trouble, billing…); NULL — «Другое».
+    category = Column(String(32), nullable=True)
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
