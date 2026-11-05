@@ -98,6 +98,8 @@ class RenewalOptionResponse(BaseModel):
     period_days: int
     price_kopeks: int
     price_rubles: float
+    # Устройства сверх лимита тарифа с доплатой в этой цене: pricing.breakdown['extra_devices'].
+    extra_devices: int = 0
     discount_percent: int = 0
     original_price_kopeks: int | None = None
     # Период, отмеченный оператором как самый выгодный.

@@ -94,6 +94,7 @@ async def get_renewal_options(
                 period_days=period,
                 price_kopeks=pricing.final_total,
                 price_rubles=pricing.final_total / 100,
+                extra_devices=int(pricing.breakdown.get('extra_devices', 0) or 0),
                 discount_percent=combined_discount,
                 original_price_kopeks=original_price if combined_discount > 0 else None,
                 # Выделение живёт у тарифа. Когда периоды берутся не из тарифа
