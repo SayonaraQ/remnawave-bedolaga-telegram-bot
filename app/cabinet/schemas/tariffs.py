@@ -90,6 +90,9 @@ class TariffDetailResponse(BaseModel):
     is_active: bool
     is_trial_available: bool
     is_highlighted: bool = False
+    tagline: str | None = None
+    speed_limit_mbps: int | None = None
+    has_premium_servers: bool = False
     allow_traffic_topup: bool = True
     traffic_topup_enabled: bool = False
     traffic_topup_packages: dict[str, int] = Field(default_factory=dict)
@@ -157,6 +160,9 @@ class TariffCreateRequest(BaseModel):
     description: str | None = None
     is_active: bool = True
     is_highlighted: bool = False
+    tagline: str | None = Field(None, max_length=160)
+    speed_limit_mbps: int | None = Field(None, ge=1, le=100000)
+    has_premium_servers: bool = False
     allow_traffic_topup: bool = True
     traffic_topup_enabled: bool = False
     traffic_topup_packages: dict[str, int] = Field(default_factory=dict)
@@ -215,6 +221,9 @@ class TariffUpdateRequest(BaseModel):
     description: str | None = None
     is_active: bool | None = None
     is_highlighted: bool | None = None
+    tagline: str | None = Field(None, max_length=160)
+    speed_limit_mbps: int | None = Field(None, ge=1, le=100000)
+    has_premium_servers: bool | None = None
     allow_traffic_topup: bool | None = None
     traffic_topup_enabled: bool | None = None
     traffic_topup_packages: dict[str, int] | None = None

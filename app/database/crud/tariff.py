@@ -225,6 +225,9 @@ async def create_tariff(
     panel_tag: str | None = None,
     # Дни триала на тарифе; None = глобальный TRIAL_DURATION_DAYS
     trial_duration_days: int | None = None,
+    tagline: str | None = None,
+    speed_limit_mbps: int | None = None,
+    has_premium_servers: bool = False,
 ) -> Tariff:
     """Создает новый тариф."""
     normalized_prices = _normalize_period_prices(period_prices)
@@ -243,6 +246,9 @@ async def create_tariff(
         period_prices=normalized_prices,
         highlight_period_days=_resolve_highlight_period(normalized_prices, highlight_period_days),
         is_highlighted=is_highlighted,
+        tagline=(tagline or '').strip() or None,
+        speed_limit_mbps=speed_limit_mbps,
+        has_premium_servers=has_premium_servers,
         tier_level=max(1, tier_level),
         is_trial_available=is_trial_available,
         allow_traffic_topup=allow_traffic_topup,
@@ -345,6 +351,9 @@ async def update_tariff(
     external_squad_uuid: str | None = ...,  # ... = не передан, None = убрать внешний сквад
     # Свой тег панели: ... = не передан, None/'' = снять
     panel_tag: str | None = ...,
+    tagline: str | None = ...,
+    speed_limit_mbps: int | None = ...,
+    has_premium_servers: bool | None = None,
 ) -> Tariff:
     """Обновляет существующий тариф."""
     if name is not None:
@@ -383,6 +392,12 @@ async def update_tariff(
         )
     if is_highlighted is not None:
         tariff.is_highlighted = is_highlighted
+    if tagline is not ...:
+        tariff.tagline = (tagline or '').strip() or None
+    if speed_limit_mbps is not ...:
+        tariff.speed_limit_mbps = speed_limit_mbps
+    if has_premium_servers is not None:
+        tariff.has_premium_servers = has_premium_servers
     if tier_level is not None:
         tariff.tier_level = max(1, tier_level)
     if is_trial_available is not None:

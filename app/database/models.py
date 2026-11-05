@@ -2219,6 +2219,11 @@ class Tariff(Base):
     # тариф, потом период внутри него.
     is_highlighted = Column(Boolean, default=False, server_default='false', nullable=False)
 
+    # Преимущества карточки тарифа в кабинете
+    tagline = Column(String(160), nullable=True)
+    speed_limit_mbps = Column(Integer, nullable=True)
+    has_premium_servers = Column(Boolean, default=False, server_default='false', nullable=False)
+
     # Дополнительные настройки
     is_trial_available = Column(Boolean, default=False, nullable=False)  # Можно ли взять триал на этом тарифе
     allow_traffic_topup = Column(Boolean, default=True, nullable=False)  # Разрешена ли докупка трафика для этого тарифа

@@ -255,6 +255,9 @@ async def get_tariff(
         period_prices=_period_prices_to_list(tariff.period_prices),
         highlight_period_days=tariff.highlight_period_days,
         is_highlighted=tariff.is_highlighted,
+        tagline=tariff.tagline,
+        speed_limit_mbps=tariff.speed_limit_mbps,
+        has_premium_servers=tariff.has_premium_servers,
         allowed_squads=allowed_squads,
         server_traffic_limits=server_limits_response,
         servers=servers,
@@ -320,6 +323,9 @@ async def create_new_tariff(
         period_prices=period_prices_dict,
         highlight_period_days=request.highlight_period_days or None,
         is_highlighted=request.is_highlighted,
+        tagline=request.tagline,
+        speed_limit_mbps=request.speed_limit_mbps,
+        has_premium_servers=request.has_premium_servers,
         allowed_squads=request.allowed_squads,
         server_traffic_limits=server_limits_dict,
         promo_group_ids=request.promo_group_ids or None,
@@ -385,6 +391,12 @@ async def update_existing_tariff(
         updates['is_active'] = request.is_active
     if request.is_highlighted is not None:
         updates['is_highlighted'] = request.is_highlighted
+    if 'tagline' in request.model_fields_set:
+        updates['tagline'] = (request.tagline or '').strip() or None
+    if 'speed_limit_mbps' in request.model_fields_set:
+        updates['speed_limit_mbps'] = request.speed_limit_mbps
+    if request.has_premium_servers is not None:
+        updates['has_premium_servers'] = request.has_premium_servers
     if request.allow_traffic_topup is not None:
         updates['allow_traffic_topup'] = request.allow_traffic_topup
     if request.traffic_topup_enabled is not None:
