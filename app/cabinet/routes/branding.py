@@ -37,7 +37,7 @@ LOGO_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.svg']
 BRANDING_NAME_KEY = 'CABINET_BRANDING_NAME'
 BRANDING_LOGO_KEY = 'CABINET_BRANDING_LOGO'  # Stores "custom" or "default"
 THEME_COLORS_KEY = 'CABINET_THEME_COLORS'  # Stores JSON with theme colors
-ENABLED_THEMES_KEY = 'CABINET_ENABLED_THEMES'  # Stores JSON with enabled themes {"dark": true, "light": false}
+ENABLED_THEMES_KEY = 'CABINET_ENABLED_THEMES'  # Stores JSON with enabled themes and seasonal preferences
 ANIMATION_ENABLED_KEY = 'CABINET_ANIMATION_ENABLED'  # Stores "true" or "false"
 FULLSCREEN_ENABLED_KEY = 'CABINET_FULLSCREEN_ENABLED'  # Stores "true" or "false"
 YANDEX_METRIKA_ID_KEY = 'CABINET_YANDEX_METRIKA_ID'  # Stores counter ID (numeric string)
@@ -124,6 +124,8 @@ class EnabledThemesResponse(BaseModel):
 
     dark: bool = True
     light: bool = True
+    seasonal: bool = False
+    seasonalDefault: bool = True
 
 
 class EnabledThemesUpdate(BaseModel):
@@ -131,6 +133,8 @@ class EnabledThemesUpdate(BaseModel):
 
     dark: bool | None = None
     light: bool | None = None
+    seasonal: bool | None = None
+    seasonalDefault: bool | None = None
 
 
 class AnimationEnabledResponse(BaseModel):
@@ -166,6 +170,7 @@ ALLOWED_BG_TYPES = (
     'starfield',
     'matrix-rain',
     'liquid-gradient',
+    'liquid-light',
     'constellation',
     'none',
 )
@@ -225,6 +230,7 @@ class AnimationConfigUpdate(BaseModel):
             'starfield',
             'matrix-rain',
             'liquid-gradient',
+            'liquid-light',
             'constellation',
             'none',
         ]
@@ -1026,7 +1032,7 @@ async def reset_theme_colors(
 
 # ============ Enabled Themes Routes ============
 
-DEFAULT_ENABLED_THEMES = {'dark': True, 'light': True}
+DEFAULT_ENABLED_THEMES = {'dark': True, 'light': True, 'seasonal': False, 'seasonalDefault': True}
 
 
 @router.get('/themes', response_model=EnabledThemesResponse)

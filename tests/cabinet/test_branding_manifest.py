@@ -106,10 +106,14 @@ async def test_manifest_icons_are_fetchable_urls_not_data_uris(monkeypatch) -> N
     }
 
 
-async def test_light_background_when_dark_theme_is_disabled(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    'seasonal_settings',
+    [{}, {'seasonal': False, 'seasonalDefault': True}, {'seasonal': True, 'seasonalDefault': False}],
+)
+async def test_light_background_when_dark_theme_is_disabled(monkeypatch, seasonal_settings: dict[str, bool]) -> None:
     monkeypatch.setattr(branding_routes, 'get_logo_path', lambda: None)
     values = {
-        branding_routes.ENABLED_THEMES_KEY: json.dumps({'dark': False, 'light': True}),
+        branding_routes.ENABLED_THEMES_KEY: json.dumps({'dark': False, 'light': True, **seasonal_settings}),
         branding_routes.THEME_COLORS_KEY: json.dumps({'lightBackground': '#fafafa'}),
     }
 

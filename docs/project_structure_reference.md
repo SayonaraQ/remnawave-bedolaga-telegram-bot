@@ -1890,7 +1890,7 @@
   Функции: `parse_positive_rubles_to_kopeks` — Parse a positive ruble amount without floating-point rounding., `parse_positive_gb` — Parse a positive whole-number traffic amount in gigabytes., `validate_custom_traffic_configuration` — Return user-facing validation errors for enabling custom traffic.
 - `app/services/tariff_purchase_devices.py` — Python-модуль
   Классы: `DeviceSelectionError` (1 методов), `PurchaseDeviceSelection`
-  Функции: `resolve_purchase_device_selection` — Preserve legacy defaults; never reinterpret renewal as device purchase.
+  Функции: `effective_max_device_limit` — Return the purchase ceiling when the displayed price allows extra devices., `resolve_purchase_device_selection` — Preserve legacy defaults; never reinterpret renewal as device purchase.
 - `app/services/tariff_purchase_quote.py` — Python-модуль
   Классы: `PurchaseQuoteError` (1 методов), `PurchaseQuote`
   Функции: `save_purchase_quote` — Cache consent terms, never a substitute for durable checkout identity., `load_purchase_quote`, `purchase_parameters` — Exclude transport IDs from the immutable identity of the order., `purchase_fingerprint`, `purchase_quote_terms`, `validate_purchase_duration` — Reject unrepresentable expiry before any debit, including legacy requests., `calculate_purchase_quote` — Calculate validated terms; callers enforce availability and target ownership.
@@ -2466,6 +2466,9 @@
 - `app/utils/support_access.py` — Python-модуль
   Классы: нет
   Функции: `is_support_handler`
+- `app/utils/tariff_common_features.py` — Python-модуль
+  Классы: нет
+  Функции: `parse_tariff_common_features` — Return at most eight nonempty features with bounded display text.
 - `app/utils/telegram_delivery.py` — Python-модуль
   Классы: нет
   Функции: `is_user_unreachable` — Сообщение некуда доставить: 403 от Telegram или 400 с маркером недоступности., `describe_unreachable` — Причина по-русски для отчёта админам; для незнакомого отказа — общая формулировка.
@@ -3269,6 +3272,9 @@
 - `migrations/alembic/versions/0141_faq_page_category.py` — Python-модуль
   Классы: нет
   Функции: `upgrade`, `downgrade`
+- `migrations/alembic/versions/0142_tariff_card_fields.py` — Python-модуль
+  Классы: нет
+  Функции: `upgrade`, `downgrade`
 
 ## scripts
 
@@ -3419,6 +3425,9 @@
 - `tests/test_sync_bot_username.py` — Python-модуль
   Классы: нет
   Функции: `test_sync_overrides_stale_username`, `test_sync_keeps_config_on_get_me_failure`, `test_sync_noop_when_already_correct`
+- `tests/test_tariff_common_features.py` — Python-модуль
+  Классы: нет
+  Функции: `test_parse_tariff_common_features`
 - `tests/test_tariff_highlight_period.py` — Python-модуль
   Классы: нет
   Функции: `test_highlighted_period_is_marked_in_every_keyboard`, `test_nothing_is_marked_without_a_highlight`, `test_stale_highlight_marks_nothing` — Период удалили, а число осталось: отмечать нечего, но и падать нельзя., `test_prices_stay_visible_next_to_the_badge` — Отметка добавляется к строке, а не вместо неё: цена обязана остаться., `test_resolve_keeps_only_existing_periods`, `test_highlight_survives_price_edit_only_if_the_period_survives` — Правка цен не должна оставлять метку на периоде, которого больше нет., `test_highlight_cannot_point_at_a_missing_period`, `test_highlighted_tariff_is_marked_in_the_list`, `test_purchased_mark_wins_over_the_badge` — Галочка «уже куплен» отвечает на другой вопрос и важнее подсказки о выгоде., `test_tariff_list_survives_objects_without_the_flag` — Старые вызовы передают тарифы без нового поля — список не должен падать., `test_tariff_highlight_is_stored_and_cleared`
@@ -3524,6 +3533,9 @@
 - `tests/cabinet/test_admin_sync_records_panel_identity.py` — Python-модуль
   Классы: нет
   Функции: `test_single_mode_update_records_user_panel_id_on_new_subscription`, `test_single_mode_leaves_row_unlinked_when_another_row_holds_the_id` — Колонка частично уникальна: id у соседней строки — не пишем и не падаем., `test_multi_mode_new_subscription_gets_its_own_panel_user`, `test_sync_to_panel_endpoint_records_panel_id_on_selected_subscription`
+- `tests/cabinet/test_admin_tariff_card_fields.py` — Python-модуль
+  Классы: нет
+  Функции: `test_create_tariff_saves_card_fields`, `test_create_tariff_without_card_fields_uses_defaults`, `test_update_tariff_null_clears_tagline_and_speed`, `test_update_tariff_without_card_fields_keeps_them`, `test_update_tariff_blank_tagline_becomes_none`, `test_create_tariff_normalizes_tagline`, `test_update_tariff_changes_speed_and_premium_flag`, `test_speed_limit_validation`, `test_tagline_length_validation`
 - `tests/cabinet/test_admin_tariff_change_keeps_extra_devices.py` — Python-модуль
   Классы: нет
   Функции: `no_global_cap`, `test_admin_change_carries_extra_devices`, `test_global_cap_applies_without_tariff_cap`, `test_user_switch_still_resets_to_new_base`, `test_bulk_change_tariff_keeps_paid_devices` — Массовая смена тарифа: 3 докупленных устройства сверх базы 8 остаются., `test_managed_same_tariff_confirmation_does_not_grant_again`, `no_cispay_in_tariff_mutation_unit_fixture`
@@ -3569,6 +3581,9 @@
 - `tests/cabinet/test_branding_manifest.py` — Python-модуль
   Классы: нет
   Функции: `test_manifest_uses_branding_name_and_theme_colors`, `test_manifest_icons_are_fetchable_urls_not_data_uris`, `test_light_background_when_dark_theme_is_disabled`, `test_broken_stored_colors_fall_back_to_defaults`, `test_empty_name_uses_build_default`, `test_start_url_accepts_only_a_same_site_path`, `test_icon_version_changes_with_logo_name_and_colors`, `test_logo_icon_is_an_opaque_square_of_the_exact_size`, `test_full_bleed_logo_fills_the_whole_tile_with_its_own_color` — Логотип — сплошная плитка (красный квадрат). На фоне тёмной темы maskable-вариант, `test_full_bleed_logo_with_baked_rounded_corners_gets_its_color_in_the_corners` — Скругление, запечённое в PNG: углы прозрачные, остальной край — цвет логотипа., `test_logo_with_a_varied_edge_keeps_the_theme_background` — Фото или градиент до краёв: единого цвета нет — угадывать нельзя, остаётся фон темы., `test_without_logo_icon_is_a_monogram_on_the_accent`, `test_svg_logo_falls_back_to_monogram`, `test_unreadable_logo_falls_back_to_monogram_with_a_warning`, `test_unsupported_icon_size_is_404`, `test_readable_text_matches_the_cabinet_choice`
+- `tests/cabinet/test_branding_themes.py` — Python-модуль
+  Классы: нет
+  Функции: `test_get_enabled_themes_uses_defaults_for_missing_settings`, `test_patch_seasonal_flags_preserves_legacy_themes`, `test_patch_null_flags_preserves_stored_preferences`, `test_patch_cannot_disable_both_core_themes_even_with_seasonal_enabled`, `test_animation_config_accepts_liquid_light`, `test_animation_config_rejects_unknown_type`
 - `tests/cabinet/test_broadcast_audience.py` — Python-модуль
   Классы: нет
   Функции: `test_every_existing_dropdown_option_is_available_as_a_condition`, `rule`, `test_rows_are_evaluated_strictly_from_top_to_bottom`, `test_long_mixed_audience_keeps_top_down_results_and_compiles`, `test_not_equal_activity_includes_users_without_activity`, `test_not_equal_tariff_excludes_every_user_with_any_matching_subscription`, `test_email_promo_group_rule_preserves_existing_group_filter`, `test_expiring_preserves_daily_tariff_exclusion`, `test_preview_matches_telegram_and_email_delivery_after_preferences`, `test_send_stores_rules_and_passes_them_to_delivery`, `test_email_send_uses_its_own_audience`, `test_direct_email_user_rule_rejects_unverified_recipient`, `test_preview_rejects_mismatched_field_and_value`, `test_atomic_subscription_conditions_can_match_different_subscriptions`, `test_expired_status_excludes_any_live_subscription_including_trial`, `test_atomic_expiring_includes_live_trials_and_preserves_daily_exclusions`, `test_traffic_thresholds_treat_null_as_zero_for_preview_and_delivery`, `test_traffic_thresholds_dates_and_zero_are_independent`, `test_user_autocomplete_matches_any_part_and_uses_stable_id`, `test_atomic_audience_rejects_invalid_values_and_cross_channel_fields`, `test_preview_without_users_read_shows_count_but_no_people` — У роли Marketer есть broadcasts:*, но нет users:read: размер аудитории — да,, `test_user_search_requires_users_read` — Поиск по части ника/почты выгружает людей из базы — одного права на рассылки мало., `test_unreadable_stored_audience_does_not_break_history`, `test_bot_history_names_cabinet_audience`
@@ -3773,6 +3788,9 @@
 - `tests/cabinet/test_promocode_traffic_roundtrip.py` — Python-модуль
   Классы: нет
   Функции: `test_traffic_survives_create` — Указанный при создании трафик попадает в строку и в ответ., `test_traffic_is_updatable` — Правка меняет трафик, а не отвечает 200 со старым значением.
+- `tests/cabinet/test_purchase_options_card_fields.py` — Python-модуль
+  Классы: нет
+  Функции: `purchase_options`, `test_purchase_options_exposes_tariff_card_fields`, `test_purchase_options_legacy_tariff_has_empty_card_fields`, `test_effective_max_device_limit`, `test_purchase_options_exposes_effective_device_ceiling`, `test_device_ceiling_uses_response_price`, `test_purchase_options_common_features`, `test_common_features_setting_is_registered`
 - `tests/cabinet/test_purchase_tariff_expired_trial_reuse.py` — Python-модуль
   Классы: нет
   Функции: `test_purchase_tariff_tariff_lookup_includes_inactive`
@@ -3794,6 +3812,9 @@
 - `tests/cabinet/test_remnawave_sync_timeout.py` — Python-модуль
   Классы: нет
   Функции: `test_sync_timeout_constant_is_sane`, `test_inline_sync_is_time_bounded`, `test_timeout_defers_to_fallback_and_returns_promptly`
+- `tests/cabinet/test_renewal_options_extra_devices.py` — Python-модуль
+  Классы: нет
+  Функции: `test_renewal_option_includes_extra_devices`
 - `tests/cabinet/test_renewal_single_tariff_mode.py` — Python-модуль
   Классы: нет
   Функции: `single_tariff_mode`, `panel`, `test_expired_subscription_gets_tariff_periods_without_multi_tariff`, `test_resolve_subscription_without_multi_tariff_loads_the_tariff` — Любой маршрут, взявший подписку через resolve_subscription, может читать её тариф.
@@ -3821,6 +3842,9 @@
 - `tests/cabinet/test_squad_name_validation.py` — Python-модуль
   Классы: нет
   Функции: `test_limits_match_panel_contract`, `test_helper_rejects_names_the_panel_rejects`, `test_helper_accepts_panel_valid_names`, `test_create_schemas_reject_invalid_names`, `test_update_schemas_reject_invalid_names`, `test_rename_action_rejects_invalid_names`, `test_schemas_accept_panel_valid_names`, `test_update_and_action_still_allow_omitting_name`
+- `tests/cabinet/test_subscription_autopay_period.py` — Python-модуль
+  Классы: нет
+  Функции: `test_response_carries_autopay_period_days`, `test_response_autopay_period_days_defaults_to_none`
 - `tests/cabinet/test_subscription_requires_tariff_flag.py` — Python-модуль
   Классы: нет
   Функции: `tariffs_mode`, `classic_mode`, `test_paid_subscription_without_tariff_requires_tariff`, `test_subscription_with_tariff_does_not_require_tariff`, `test_trial_without_tariff_does_not_require_tariff` — Пробная подписка идёт своим путём (покупка тарифа), признак — только для платных., `test_classic_mode_never_requires_tariff`, `test_list_item_carries_the_flag_for_paid_subscription_without_tariff` — Список подписок (мультитариф) тоже говорит кабинету, что подписке нужен тариф.
@@ -5065,6 +5089,9 @@
 - `tests/migrations/test_0141_faq_category.py` — Python-модуль
   Классы: нет
   Функции: `test_faq_category_sqlite_upgrade_downgrade_keeps_rows`
+- `tests/migrations/test_0142_tariff_card_fields.py` — Python-модуль
+  Классы: нет
+  Функции: `test_tariff_card_fields_sqlite_upgrade_downgrade_keeps_rows`
 
 ### tests/services
 
