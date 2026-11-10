@@ -125,6 +125,7 @@ class EnabledThemesResponse(BaseModel):
     dark: bool = True
     light: bool = True
     seasonal: bool = False
+    seasonalAdminsOnly: bool = False
     seasonalDefault: bool = True
 
 
@@ -134,6 +135,7 @@ class EnabledThemesUpdate(BaseModel):
     dark: bool | None = None
     light: bool | None = None
     seasonal: bool | None = None
+    seasonalAdminsOnly: bool | None = None
     seasonalDefault: bool | None = None
 
 
@@ -1032,7 +1034,14 @@ async def reset_theme_colors(
 
 # ============ Enabled Themes Routes ============
 
-DEFAULT_ENABLED_THEMES = {'dark': True, 'light': True, 'seasonal': False, 'seasonalDefault': True}
+DEFAULT_ENABLED_THEMES = {
+    'dark': True,
+    'light': True,
+    'seasonal': False,
+    # Seasonal appearance for admins only (preview before enabling it for everyone).
+    'seasonalAdminsOnly': False,
+    'seasonalDefault': True,
+}
 
 
 @router.get('/themes', response_model=EnabledThemesResponse)

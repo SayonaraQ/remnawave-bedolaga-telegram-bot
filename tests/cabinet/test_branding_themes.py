@@ -16,16 +16,19 @@ from app.cabinet.routes import branding as branding_routes
 @pytest.mark.parametrize(
     ('stored', 'expected'),
     [
-        (None, {'dark': True, 'light': True, 'seasonal': False, 'seasonalDefault': True}),
+        (None, {'dark': True, 'light': True, 'seasonal': False, 'seasonalAdminsOnly': False, 'seasonalDefault': True}),
         (
             '{"dark": true, "light": false}',
-            {'dark': True, 'light': False, 'seasonal': False, 'seasonalDefault': True},
+            {'dark': True, 'light': False, 'seasonal': False, 'seasonalAdminsOnly': False, 'seasonalDefault': True},
         ),
         (
-            '{"dark": false, "light": true, "seasonal": true, "seasonalDefault": false}',
-            {'dark': False, 'light': True, 'seasonal': True, 'seasonalDefault': False},
+            '{"dark": false, "light": true, "seasonal": true, "seasonalAdminsOnly": false, "seasonalDefault": false}',
+            {'dark': False, 'light': True, 'seasonal': True, 'seasonalAdminsOnly': False, 'seasonalDefault': False},
         ),
-        ('not json', {'dark': True, 'light': True, 'seasonal': False, 'seasonalDefault': True}),
+        (
+            'not json',
+            {'dark': True, 'light': True, 'seasonal': False, 'seasonalAdminsOnly': False, 'seasonalDefault': True},
+        ),
     ],
 )
 async def test_get_enabled_themes_uses_defaults_for_missing_settings(stored: str | None, expected: dict) -> None:
@@ -38,8 +41,9 @@ async def test_get_enabled_themes_uses_defaults_for_missing_settings(stored: str
 @pytest.mark.parametrize(
     ('update', 'expected_seasonal'),
     [
-        ({'seasonal': True}, {'seasonal': True, 'seasonalDefault': True}),
-        ({'seasonalDefault': False}, {'seasonal': False, 'seasonalDefault': False}),
+        ({'seasonal': True}, {'seasonal': True, 'seasonalAdminsOnly': False, 'seasonalDefault': True}),
+        ({'seasonalDefault': False}, {'seasonal': False, 'seasonalAdminsOnly': False, 'seasonalDefault': False}),
+        ({'seasonalAdminsOnly': True}, {'seasonal': False, 'seasonalAdminsOnly': True, 'seasonalDefault': True}),
     ],
 )
 async def test_patch_seasonal_flags_preserves_legacy_themes(update: dict, expected_seasonal: dict) -> None:
@@ -61,13 +65,15 @@ async def test_patch_seasonal_flags_preserves_legacy_themes(update: dict, expect
 
 
 async def test_patch_null_flags_preserves_stored_preferences() -> None:
-    stored = {'dark': False, 'light': True, 'seasonal': True, 'seasonalDefault': False}
+    stored = {'dark': False, 'light': True, 'seasonal': True, 'seasonalAdminsOnly': False, 'seasonalDefault': False}
     with (
         patch('app.cabinet.routes.branding.get_setting_value', AsyncMock(return_value=json.dumps(stored))),
         patch('app.cabinet.routes.branding.set_setting_value', new_callable=AsyncMock) as save,
     ):
         response = await branding_routes.update_enabled_themes(
-            payload=branding_routes.EnabledThemesUpdate(dark=None, light=None, seasonal=None, seasonalDefault=None),
+            payload=branding_routes.EnabledThemesUpdate(
+                dark=None, light=None, seasonal=None, seasonalAdminsOnly=None, seasonalDefault=None
+            ),
             admin=SimpleNamespace(telegram_id=123),
             db=AsyncMock(),
         )
