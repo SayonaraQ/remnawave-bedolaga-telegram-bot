@@ -173,6 +173,8 @@ ALLOWED_BG_TYPES = (
     'matrix-rain',
     'liquid-gradient',
     'liquid-light',
+    'halo',
+    'stardust',
     'constellation',
     'none',
 )
@@ -233,6 +235,8 @@ class AnimationConfigUpdate(BaseModel):
             'matrix-rain',
             'liquid-gradient',
             'liquid-light',
+            'halo',
+            'stardust',
             'constellation',
             'none',
         ]

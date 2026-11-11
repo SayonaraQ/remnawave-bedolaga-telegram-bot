@@ -106,6 +106,14 @@ def test_animation_config_accepts_liquid_light() -> None:
     assert 'liquid-light' in branding_routes.ALLOWED_BG_TYPES
 
 
+@pytest.mark.parametrize('background_type', ['halo', 'stardust'])
+def test_animation_config_accepts_new_background_types(background_type: str) -> None:
+    config = branding_routes.AnimationConfigUpdate(type=background_type)
+
+    assert config.type == background_type
+    assert background_type in branding_routes.ALLOWED_BG_TYPES
+
+
 def test_animation_config_rejects_unknown_type() -> None:
     with pytest.raises(ValidationError, match='type'):
         branding_routes.AnimationConfigUpdate(type='unknown-background')
