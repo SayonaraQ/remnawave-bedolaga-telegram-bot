@@ -5,12 +5,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, get_args
 
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -151,7 +151,7 @@ class AnimationEnabledUpdate(BaseModel):
     enabled: bool
 
 
-ALLOWED_BG_TYPES = (
+BackgroundType = Literal[
     'aurora',
     'sparkles',
     'vortex',
@@ -177,7 +177,11 @@ ALLOWED_BG_TYPES = (
     'stardust',
     'constellation',
     'none',
-)
+]
+
+# Список для проверок вне pydantic (лендинги) выводится из того же Literal,
+# чтобы новый фон не пришлось дописывать в два места.
+ALLOWED_BG_TYPES: tuple[str, ...] = get_args(BackgroundType)
 
 MAX_SETTINGS_KEYS = 20
 MAX_SETTINGS_VALUE_LEN = 200
@@ -197,6 +201,44 @@ def _validate_settings(v: dict) -> dict:
     return v
 
 
+class LightAnimationConfig(BaseModel):
+    """Фон для светлой темы.
+
+    Один эффект не обязан подходить обеим темам: «Звёздная пыль» хороша на тёмном
+    фоне и почти не видна на светлом. ``inherit=True`` (по умолчанию и у старых
+    конфигов без этого поля) — светлая тема показывает основной фон, как раньше.
+    ``enabled`` и ``reducedOnMobile`` здесь нет: они общие для обеих тем.
+    """
+
+    inherit: bool = True
+    type: BackgroundType = 'aurora'
+    settings: dict = Field(default_factory=dict)
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    blur: float = Field(default=0, ge=0, le=100)
+
+    @field_validator('settings')
+    @classmethod
+    def validate_settings(cls, v: dict) -> dict:
+        return _validate_settings(v)
+
+
+class LightAnimationConfigUpdate(BaseModel):
+    """Частичное обновление фона светлой темы: приходят только изменённые поля."""
+
+    inherit: bool | None = None
+    type: BackgroundType | None = None
+    settings: dict | None = None
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0)
+    blur: float | None = Field(default=None, ge=0, le=100)
+
+    @field_validator('settings')
+    @classmethod
+    def validate_settings(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        return _validate_settings(v)
+
+
 class AnimationConfigResponse(BaseModel):
     """Full animation config."""
 
@@ -206,46 +248,19 @@ class AnimationConfigResponse(BaseModel):
     opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     blur: float = Field(default=0, ge=0, le=100)
     reducedOnMobile: bool = True
+    light: LightAnimationConfig = Field(default_factory=LightAnimationConfig)
 
 
 class AnimationConfigUpdate(BaseModel):
     """Request to update animation config (partial update)."""
 
     enabled: bool | None = None
-    type: (
-        Literal[
-            'aurora',
-            'sparkles',
-            'vortex',
-            'shooting-stars',
-            'background-beams',
-            'background-beams-collision',
-            'gradient-animation',
-            'wavy',
-            'background-lines',
-            'boxes',
-            'meteors',
-            'grid',
-            'dots',
-            'spotlight',
-            'ripple',
-            'fireflies',
-            'snowfall',
-            'starfield',
-            'matrix-rain',
-            'liquid-gradient',
-            'liquid-light',
-            'halo',
-            'stardust',
-            'constellation',
-            'none',
-        ]
-        | None
-    ) = None
+    type: BackgroundType | None = None
     settings: dict | None = None
     opacity: float | None = Field(default=None, ge=0.0, le=1.0)
     blur: float | None = Field(default=None, ge=0, le=100)
     reducedOnMobile: bool | None = None
+    light: LightAnimationConfigUpdate | None = None
 
     @field_validator('settings')
     @classmethod
@@ -1139,6 +1154,33 @@ async def update_animation_enabled(
 # ============ Animation Config Routes (new JSON-based) ============
 
 
+def _animation_config_response(config: dict[str, Any]) -> AnimationConfigResponse:
+    """Ответ из сохранённого конфига; битый фон светлой темы не роняет весь ответ."""
+    try:
+        return AnimationConfigResponse(**config)
+    except ValidationError:
+        if 'light' not in config:
+            raise
+        logger.warning('Stored light background override is invalid, using inherit', light=config.get('light'))
+        return AnimationConfigResponse(**{k: v for k, v in config.items() if k != 'light'})
+
+
+def _merge_animation_config(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Слить частичное обновление в сохранённый конфиг.
+
+    ``light`` сливается по полям: админка шлёт только изменённое («выключить
+    наследование», «сменить тип»), и остальные поля фона светлой темы не должны
+    сбрасываться. Обновление без ``light`` его не трогает.
+    """
+    merged = dict(current)
+    light_update = update.get('light')
+    merged.update({k: v for k, v in update.items() if k != 'light'})
+    if light_update:
+        stored_light = current.get('light')
+        merged['light'] = {**(stored_light if isinstance(stored_light, dict) else {}), **light_update}
+    return merged
+
+
 @router.get('/animation-config', response_model=AnimationConfigResponse)
 async def get_animation_config(
     db: AsyncSession = Depends(get_cabinet_db),
@@ -1149,8 +1191,8 @@ async def get_animation_config(
     if config_value is not None:
         try:
             config = json.loads(config_value)
-            return AnimationConfigResponse(**config)
-        except (json.JSONDecodeError, TypeError):
+            return _animation_config_response(config)
+        except (json.JSONDecodeError, TypeError, ValidationError):
             pass
 
     # Auto-migrate from old ANIMATION_ENABLED_KEY
@@ -1181,22 +1223,24 @@ async def update_animation_config(
         current = dict(DEFAULT_ANIMATION_CONFIG)
 
     # Merge only provided fields
-    update_data = payload.model_dump(exclude_none=True)
-    current.update(update_data)
+    current = _merge_animation_config(current, payload.model_dump(exclude_none=True))
 
     await set_setting_value(db, ANIMATION_CONFIG_KEY, json.dumps(current))
 
     # Also sync old key for backwards compat
     await set_setting_value(db, ANIMATION_ENABLED_KEY, str(current.get('enabled', True)).lower())
 
+    light = current.get('light') if isinstance(current.get('light'), dict) else {}
     logger.info(
         'Admin updated animation config',
         telegram_id=admin.telegram_id,
         type=current.get('type'),
         enabled=current.get('enabled'),
+        light_inherit=light.get('inherit', True),
+        light_type=light.get('type'),
     )
 
-    return AnimationConfigResponse(**current)
+    return _animation_config_response(current)
 
 
 # ============ Fullscreen Routes ============
