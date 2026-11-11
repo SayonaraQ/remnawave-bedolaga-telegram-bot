@@ -3,6 +3,8 @@
 Safari берёт иконку вкладки только по статической ссылке из index.html и смену
 через JS не замечает, а скруглённую плитку из логотипа кабинет рисует на canvas
 уже после загрузки — Safari оставался с сырым квадратом. Скругляем здесь.
+Прозрачные поля обрезаем, чтобы значок заполнял ячейку вкладки в 16 px,
+как иконки других сайтов, сохраняя пропорции видимой части логотипа.
 """
 
 from __future__ import annotations
@@ -34,9 +36,20 @@ def rounded_logo_tile(
     size: int = FAVICON_TILE_SIZE,
     corner_ratio: float = FAVICON_CORNER_RATIO,
 ) -> bytes:
-    """PNG ``size``×``size``: логотип вписан по принципу object-fit: cover, углы прозрачные."""
+    """PNG ``size``×``size`` без прозрачных полей, чтобы заполнить ячейку вкладки в 16 px.
+
+    Обрезанный логотип вписывается с сохранением пропорций; иначе — object-fit: cover.
+    Углы плитки прозрачные.
+    """
     with Image.open(logo_path) as source:
-        tile = ImageOps.fit(source.convert('RGBA'), (size, size), Image.Resampling.LANCZOS)
+        source = source.convert('RGBA')
+        bbox = source.getchannel('A').point(lambda alpha: 255 if alpha > 8 else 0).getbbox()
+        if bbox and (bbox[2] - bbox[0] < source.width * 0.98 or bbox[3] - bbox[1] < source.height * 0.98):
+            content = ImageOps.contain(source.crop(bbox), (size, size), Image.Resampling.LANCZOS)
+            tile = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            tile.paste(content, ((size - content.width) // 2, (size - content.height) // 2))
+        else:
+            tile = ImageOps.fit(source, (size, size), Image.Resampling.LANCZOS)
     mask = Image.new('L', (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, size - 1, size - 1),

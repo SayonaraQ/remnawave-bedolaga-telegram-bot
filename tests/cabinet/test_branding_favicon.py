@@ -19,7 +19,7 @@ from structlog.testing import capture_logs
 from app.cabinet.routes import branding as branding_routes
 from app.cabinet.utils import brand_monogram
 from app.cabinet.utils.brand_monogram import MONOGRAM_PNG_SIZE, monogram_png, monogram_svg
-from app.cabinet.utils.favicon_tile import FAVICON_CORNER_RATIO, FAVICON_TILE_SIZE
+from app.cabinet.utils.favicon_tile import FAVICON_CORNER_RATIO, FAVICON_TILE_SIZE, rounded_logo_tile
 from app.config import settings
 
 
@@ -112,6 +112,45 @@ def test_corner_ratio_stays_below_the_safari_plate_threshold() -> None:
     # Эту иконку видит только Safari, поэтому радиус меньше, чем у плитки в
     # шапке кабинета (0,3), и поднимать его «для красоты» нельзя.
     assert 0 < FAVICON_CORNER_RATIO <= 0.12
+
+
+def test_rounded_tile_trims_transparent_margins_and_centres_the_logo(tmp_path: Path) -> None:
+    logo_path = tmp_path / 'logo.png'
+    logo = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
+    logo.paste((46, 230, 166, 255), (106, 56, 406, 456))  # 300×400, по центру.
+    logo.save(logo_path)
+
+    tile = Image.open(BytesIO(rounded_logo_tile(logo_path)))
+
+    assert tile.size == (256, 256)
+    bbox = tile.getchannel('A').getbbox()
+    assert bbox is not None
+    left, top, right, bottom = bbox
+    assert bottom - top >= 250
+    assert right - left == 192  # Пропорции 300×400 сохранены.
+    assert abs((left + right) / 2 - 128) <= 2
+
+
+def test_rounded_tile_keeps_cover_for_an_opaque_rgb_logo(tmp_path: Path) -> None:
+    logo_path = tmp_path / 'logo.jpg'
+    Image.new('RGB', (400, 300), '#2ee6a6').save(logo_path)
+
+    tile = Image.open(BytesIO(rounded_logo_tile(logo_path)))
+
+    assert tile.size == (256, 256)
+    assert tile.getchannel('A').getbbox() == (0, 0, 256, 256)
+    assert tile.getpixel((0, 0))[3] == 0
+    assert tile.getpixel((255, 255))[3] == 0
+
+
+def test_rounded_tile_accepts_a_fully_transparent_logo(tmp_path: Path) -> None:
+    logo_path = tmp_path / 'logo.png'
+    Image.new('RGBA', (512, 512), (0, 0, 0, 0)).save(logo_path)
+
+    tile = Image.open(BytesIO(rounded_logo_tile(logo_path)))
+
+    assert tile.size == (256, 256)
+    assert tile.getchannel('A').getbbox() is None
 
 
 async def test_with_logo_serves_a_rounded_tile_with_short_cache(tmp_path: Path, monkeypatch) -> None:
