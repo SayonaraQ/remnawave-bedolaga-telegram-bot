@@ -79,7 +79,17 @@ async def add_subscription_traffic(
 
     await db.flush()
     if panel is not None:
-        await grant_purchase_locked(db, subscription, new_purchase, panel)
+        account = await grant_purchase_locked(db, subscription, new_purchase, panel)
+        if (
+            subscription.status == 'limited'
+            and subscription.user.status == 'active'
+            and subscription.end_date > datetime.now(UTC)
+            and account.remaining_bytes(datetime.now(UTC)) > 0
+        ):
+            subscription.status = 'active'
+        from app.services.traffic_accounting_service import schedule_projection_after_commit
+
+        schedule_projection_after_commit(db, subscription.id)
     if commit:
         await db.commit()
         await db.refresh(subscription)
@@ -183,6 +193,12 @@ async def prepare_traffic_purchase(db, subscription, *, requested_gb=None):
             raise AccountingConflict('Subscription ownership changed')
         if grace_open and not await limited_grace_accepts_traffic_purchase(db, subscription_id):
             raise AccountingConflict('Finish temporary renewal access before adding traffic')
+        if grace_open:
+            # Апстрим 5.2.1: докупка в grace только при живом оплаченном сроке, не триал,
+            # пользователь и подписка не заблокированы, срок не сдвинут мимо снимка grace.
+            from app.services.traffic_accounting_service import require_limited_grace_topup
+
+            await require_limited_grace_topup(db, subscription)
         if legacy_in_grace and not grace_open:
             # Grace закрылся между проверкой и блокировкой — перевод не сделан, повтор.
             raise AccountingConflict('Grace closed during purchase preparation; retry')
@@ -249,6 +265,11 @@ async def prepare_user_tariff_switch(db, subscription):
         )
         if has_packages or mode == 'migrating':
             subscription, panel = await prepare_traffic_purchase(db, subscription)
+            if panel is None:
+                # Форк: legacy-подписка в grace по трафику остаётся без перевода в учёт
+                # (см. prepare_traffic_purchase) — смена тарифа идёт по legacy-пути.
+                # С 5.2.1 смена разрешена и при ``limited``, раньше сюда не доходили.
+                return subscription, None
             await reconcile_account_locked(db, subscription, panel)
             return subscription, panel
     return await prepare_admin_tariff_accounting(db, subscription)

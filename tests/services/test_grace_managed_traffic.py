@@ -257,6 +257,13 @@ def _purchase_doubles(monkeypatch, *, mode: str, grace_open: bool, accepts: bool
     monkeypatch.setattr('app.services.traffic_accounting_service.lock_accounting_subscription', lock)
     monkeypatch.setattr('app.services.traffic_accounting_service._fresh_panel', read)
     monkeypatch.setattr('app.services.grace_access_runtime.limited_grace_accepts_traffic_purchase', accepted)
+
+    async def eligible(db, subscription, **kwargs):
+        # Строгую проверку срока/триала/блокировки гоняет PG-тест апстрима
+        # (test_limited_grace_topup_postgres); здесь — только маршрутизация покупки.
+        order.append('eligible')
+
+    monkeypatch.setattr('app.services.traffic_accounting_service.require_limited_grace_topup', eligible)
     return sub, panel, order
 
 
@@ -265,7 +272,7 @@ async def test_legacy_subscription_in_traffic_grace_buys_the_old_way(monkeypatch
 
     sub, _, order = _purchase_doubles(monkeypatch, mode='legacy', grace_open=True, accepts=True)
     assert await prepare_traffic_purchase(SimpleNamespace(bind=None), sub) == (sub, None)
-    assert order == ['lease'], 'без перевода в учёт: он прочитал бы оверлей панели как остаток'
+    assert order == ['lease', 'eligible'], 'без перевода в учёт: он прочитал бы оверлей панели как остаток'
 
 
 async def test_managed_subscription_in_traffic_grace_buys_into_the_ledger(monkeypatch):
@@ -273,7 +280,7 @@ async def test_managed_subscription_in_traffic_grace_buys_into_the_ledger(monkey
 
     sub, panel, order = _purchase_doubles(monkeypatch, mode='managed', grace_open=True, accepts=True)
     assert await prepare_traffic_purchase(SimpleNamespace(bind=None), sub) == (sub, panel)
-    assert order == ['migration', 'lease', 'snapshot']
+    assert order == ['migration', 'lease', 'eligible', 'snapshot']
 
 
 async def test_other_open_grace_still_blocks_a_purchase(monkeypatch):
@@ -290,6 +297,28 @@ async def test_grace_closing_mid_purchase_asks_for_a_retry(monkeypatch):
     sub, _, _ = _purchase_doubles(monkeypatch, mode='legacy', grace_open=False, accepts=True)
     with pytest.raises(AccountingConflict, match='retry'):
         await prepare_traffic_purchase(SimpleNamespace(bind=None), sub)
+
+
+async def test_legacy_tariff_switch_with_packages_in_traffic_grace_stays_legacy(monkeypatch):
+    """5.2.1 разрешил смену тарифа при ``limited``: legacy в grace — без сверки учёта."""
+    from app.services.traffic_purchase_service import prepare_user_tariff_switch
+
+    sub, _, order = _purchase_doubles(monkeypatch, mode='legacy', grace_open=True, accepts=True)
+
+    async def no_cispay(*args, **kwargs):
+        return None
+
+    async def reconcile(*args, **kwargs):
+        raise AssertionError('legacy-подписку в grace не сверяют с учётом: снимка панели нет')
+
+    async def has_packages(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr('app.services.cispay_recurrent_guard.require_no_cispay', no_cispay)
+    monkeypatch.setattr('app.services.traffic_accounting_service.reconcile_account_locked', reconcile)
+    db = SimpleNamespace(bind=None, scalar=has_packages)
+    assert await prepare_user_tariff_switch(db, sub) == (sub, None)
+    assert order == ['lease', 'eligible']
 
 
 # --- уведомление: дата сброса из учёта ------------------------------------------
