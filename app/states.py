@@ -247,6 +247,8 @@ class AdminStates(StatesGroup):
     editing_tariff_panel_tag = State()
     editing_tariff_lava_product = State()
     editing_tariff_display_order = State()
+    editing_tariff_tagline = State()
+    editing_tariff_speed_limit = State()
     editing_tariff_custom_days_price = State()
     editing_tariff_custom_days_min = State()
     editing_tariff_custom_days_max = State()

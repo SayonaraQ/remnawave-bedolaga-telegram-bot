@@ -1,7 +1,8 @@
 """Телеграм-редактор: экран «Ещё настройки» тарифа.
 
-Тег панели, внешний сквад Remnawave, продукт Lava, порядок в списке, показ в подарках и
-разрешение докупки — поля, которые раньше правились только из кабинета.
+Тег панели, внешний сквад Remnawave, продукт Lava, порядок в списке, показ в подарках,
+разрешение докупки и поля карточки тарифа в кабинете (подзаголовок, скорость,
+премиум-серверы) — поля, которые раньше правились только из кабинета.
 """
 
 import html
@@ -25,6 +26,10 @@ from app.utils.panel_tag import PANEL_TAG_RULES, normalize_panel_tag
 logger = structlog.get_logger(__name__)
 
 _NO_EXTERNAL_SQUAD = '-'
+# Те же границы, что у кабинета (TariffUpdateRequest).
+TAGLINE_MAX_LENGTH = 160
+SPEED_LIMIT_MIN_MBPS = 1
+SPEED_LIMIT_MAX_MBPS = 100000
 
 
 def _yes_no(value: bool, language: str = 'ru') -> str:
@@ -51,6 +56,33 @@ def _ext_squad_display(tariff: Tariff, language: str = 'ru') -> str:
 def _lava_display(tariff: Tariff, language: str = 'ru') -> str:
     return html.escape(
         getattr(tariff, 'lava_product_id', None) or get_texts(language).t('ADMIN_TARIFF_HELPER_UNSET_LOWER', 'не задан')
+    )
+
+
+def _tagline_display(tariff: Tariff, language: str = 'ru') -> str:
+    return html.escape(getattr(tariff, 'tagline', None) or get_texts(language).t('ADMIN_TARIFF_HELPER_NONE', 'нет'))
+
+
+def _speed_display(tariff: Tariff, language: str = 'ru') -> str:
+    speed = getattr(tariff, 'speed_limit_mbps', None)
+    if not speed:
+        return get_texts(language).t('ADMIN_TARIFF_HELPER_SPEED_UNSET', 'не указана')
+    return get_texts(language).t('ADMIN_TARIFF_HELPER_SPEED_VALUE', 'до {v0} Мбит/с').format(v0=speed)
+
+
+def format_card_settings(tariff: Tariff, language: str = 'ru') -> str:
+    """Поля карточки тарифа в кабинете: только отображение, доступ не меняют."""
+    return (
+        get_texts(language)
+        .t(
+            'ADMIN_TARIFF_HELPER_FORMAT_CARD_SETTINGS',
+            '🪪 <b>Карточка в кабинете</b>\n• Подзаголовок: {v0}\n• Скорость: {v1}\n• Премиум-серверы: {v2}',
+        )
+        .format(
+            v0=_tagline_display(tariff, language=language),
+            v1=_speed_display(tariff, language=language),
+            v2=_yes_no(bool(getattr(tariff, 'has_premium_servers', False)), language=language),
+        )
     )
 
 
@@ -84,6 +116,8 @@ def render_panel_settings(tariff: Tariff, language: str = 'ru') -> str:
             v1=format_panel_settings(tariff, language=language),
             v2=getattr(tariff, 'display_order', 0),
         )
+        + '\n\n'
+        + format_card_settings(tariff, language=language)
     )
 
 
@@ -91,6 +125,7 @@ def get_panel_settings_keyboard(tariff: Tariff, language: str) -> InlineKeyboard
     texts = get_texts(language)
     gift = getattr(tariff, 'show_in_gift', True)
     allow_topup = getattr(tariff, 'allow_traffic_topup', True)
+    premium = bool(getattr(tariff, 'has_premium_servers', False))
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -127,6 +162,28 @@ def get_panel_settings_keyboard(tariff: Tariff, language: str) -> InlineKeyboard
                     if allow_topup
                     else get_texts(language).t('ADMIN_TARIFF_HELPER_TOPUP_ENABLE_BUTTON', '📈 Докупка: разрешить'),
                     callback_data=f'admin_tariff_toggle_allow_topup:{tariff.id}',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=get_texts(language).t('ADMIN_TARIFF_HELPER_TAGLINE_BUTTON', '📝 Подзаголовок'),
+                    callback_data=f'admin_tariff_edit_tagline:{tariff.id}',
+                ),
+                InlineKeyboardButton(
+                    text=get_texts(language).t('ADMIN_TARIFF_HELPER_SPEED_BUTTON', '⚡ Скорость'),
+                    callback_data=f'admin_tariff_edit_speed:{tariff.id}',
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=get_texts(language).t(
+                        'ADMIN_TARIFF_HELPER_PREMIUM_DISABLE_BUTTON', '💎 Премиум-серверы: убрать'
+                    )
+                    if premium
+                    else get_texts(language).t(
+                        'ADMIN_TARIFF_HELPER_PREMIUM_ENABLE_BUTTON', '💎 Премиум-серверы: отметить'
+                    ),
+                    callback_data=f'admin_tariff_toggle_premium:{tariff.id}',
                 )
             ],
             [InlineKeyboardButton(text=texts.BACK, callback_data=f'admin_tariff_view:{tariff.id}')],
@@ -399,6 +456,145 @@ async def process_display_order_input(message: types.Message, db_user: User, db:
     )
 
 
+# ---- карточка тарифа в кабинете ----
+
+
+@admin_required
+@error_handler
+async def toggle_premium_servers(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    tariff = await get_tariff_by_id(db, int(callback.data.split(':')[1]))
+    if not tariff:
+        await callback.answer(
+            get_texts(db_user.language).t('ADMIN_TARIFF_NOT_FOUND', 'Тариф не найден'), show_alert=True
+        )
+        return
+    enabled = not bool(getattr(tariff, 'has_premium_servers', False))
+    tariff = await update_tariff(db, tariff, has_premium_servers=enabled)
+    await callback.answer(
+        get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_PREMIUM_ON', 'Премиум-серверы отмечены в карточке')
+        if enabled
+        else get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_PREMIUM_OFF', 'Отметка премиум-серверов снята')
+    )
+    await _show(callback.message, tariff, db_user.language, edit=True)
+
+
+@admin_required
+@error_handler
+async def start_edit_tagline(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+    tariff = await get_tariff_by_id(db, int(callback.data.split(':')[1]))
+    if not tariff:
+        await callback.answer(
+            get_texts(db_user.language).t('ADMIN_TARIFF_NOT_FOUND', 'Тариф не найден'), show_alert=True
+        )
+        return
+    await _start_field_edit(
+        callback,
+        db_user,
+        state,
+        tariff,
+        state_value=AdminStates.editing_tariff_tagline,
+        title=get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_TAGLINE_TITLE', '📝 <b>Подзаголовок карточки</b>'),
+        current_value=_tagline_display(tariff, language=db_user.language),
+        prompt=get_texts(db_user.language)
+        .t(
+            'ADMIN_TARIFF_HELPER_TAGLINE_PROMPT',
+            'Введите строку до {v0} символов — она показывается под названием тарифа в кабинете — '
+            'или <code>-</code>, чтобы убрать.',
+        )
+        .format(v0=TAGLINE_MAX_LENGTH),
+    )
+
+
+@admin_required
+@error_handler
+async def start_edit_speed_limit(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+    tariff = await get_tariff_by_id(db, int(callback.data.split(':')[1]))
+    if not tariff:
+        await callback.answer(
+            get_texts(db_user.language).t('ADMIN_TARIFF_NOT_FOUND', 'Тариф не найден'), show_alert=True
+        )
+        return
+    await _start_field_edit(
+        callback,
+        db_user,
+        state,
+        tariff,
+        state_value=AdminStates.editing_tariff_speed_limit,
+        title=get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_SPEED_TITLE', '⚡ <b>Скорость в карточке</b>'),
+        current_value=_speed_display(tariff, language=db_user.language),
+        prompt=get_texts(db_user.language)
+        .t(
+            'ADMIN_TARIFF_HELPER_SPEED_PROMPT',
+            'Введите скорость в Мбит/с ({v0}–{v1}) — карточка покажет «до N Мбит/с» — или <code>-</code>, '
+            'чтобы убрать. Это только подпись: скорость подключения здесь не ограничивается.',
+        )
+        .format(v0=SPEED_LIMIT_MIN_MBPS, v1=SPEED_LIMIT_MAX_MBPS),
+    )
+
+
+@admin_required
+@error_handler
+async def process_tagline_input(message: types.Message, db_user: User, db: AsyncSession, state: FSMContext):
+    tariff = await _load_tariff_from_state(message, db, state, language=db_user.language)
+    if tariff is None:
+        return
+    raw = (message.text or '').strip()
+    value = '' if raw == '-' else raw
+    if len(value) > TAGLINE_MAX_LENGTH:
+        await message.answer(
+            get_texts(db_user.language)
+            .t('ADMIN_TARIFF_HELPER_TAGLINE_TOO_LONG', '❌ Не больше {v0} символов (сейчас {v1}). Попробуйте ещё раз:')
+            .format(v0=TAGLINE_MAX_LENGTH, v1=len(value))
+        )
+        return
+    # Пустая строка — снять подзаголовок, как в кабинете.
+    tariff = await update_tariff(db, tariff, tagline=value)
+    confirmation = (
+        get_texts(db_user.language)
+        .t('ADMIN_TARIFF_HELPER_TAGLINE_SAVED', '✅ Подзаголовок: {v0}')
+        .format(v0=html.escape(value))
+        if value
+        else get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_TAGLINE_REMOVED', '✅ Подзаголовок убран')
+    )
+    await _finish(message, db_user, state, tariff, confirmation)
+
+
+@admin_required
+@error_handler
+async def process_speed_limit_input(message: types.Message, db_user: User, db: AsyncSession, state: FSMContext):
+    tariff = await _load_tariff_from_state(message, db, state, language=db_user.language)
+    if tariff is None:
+        return
+    raw = (message.text or '').strip()
+    if raw == '-':
+        speed = None
+    else:
+        try:
+            speed = int(raw)
+            if not SPEED_LIMIT_MIN_MBPS <= speed <= SPEED_LIMIT_MAX_MBPS:
+                raise ValueError
+        except ValueError:
+            await message.answer(
+                get_texts(db_user.language)
+                .t(
+                    'ADMIN_TARIFF_HELPER_INVALID_SPEED',
+                    '❌ Введите целое число от {v0} до {v1} или <code>-</code>. Попробуйте ещё раз:',
+                )
+                .format(v0=SPEED_LIMIT_MIN_MBPS, v1=SPEED_LIMIT_MAX_MBPS),
+                parse_mode='HTML',
+            )
+            return
+    tariff = await update_tariff(db, tariff, speed_limit_mbps=speed)
+    confirmation = (
+        get_texts(db_user.language)
+        .t('ADMIN_TARIFF_HELPER_SPEED_SAVED', '✅ Скорость в карточке: до {v0} Мбит/с')
+        .format(v0=speed)
+        if speed
+        else get_texts(db_user.language).t('ADMIN_TARIFF_HELPER_SPEED_REMOVED', '✅ Скорость в карточке убрана')
+    )
+    await _finish(message, db_user, state, tariff, confirmation)
+
+
 # ---- внешний сквад ----
 
 
@@ -519,6 +715,11 @@ def register_panel_settings_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(start_edit_display_order, F.data.startswith('admin_tariff_edit_order:'))
     dp.callback_query.register(start_edit_external_squad, F.data.startswith('admin_tariff_edit_ext_squad:'))
     dp.callback_query.register(set_external_squad, F.data.startswith('admin_tariff_set_ext_squad:'))
+    dp.callback_query.register(toggle_premium_servers, F.data.startswith('admin_tariff_toggle_premium:'))
+    dp.callback_query.register(start_edit_tagline, F.data.startswith('admin_tariff_edit_tagline:'))
+    dp.callback_query.register(start_edit_speed_limit, F.data.startswith('admin_tariff_edit_speed:'))
     dp.message.register(process_panel_tag_input, AdminStates.editing_tariff_panel_tag)
     dp.message.register(process_lava_product_input, AdminStates.editing_tariff_lava_product)
     dp.message.register(process_display_order_input, AdminStates.editing_tariff_display_order)
+    dp.message.register(process_tagline_input, AdminStates.editing_tariff_tagline)
+    dp.message.register(process_speed_limit_input, AdminStates.editing_tariff_speed_limit)

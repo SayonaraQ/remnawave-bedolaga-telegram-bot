@@ -297,3 +297,106 @@ async def test_set_same_external_squad_does_not_resync(monkeypatch) -> None:
 
     assert updates == []
     assert scheduled == []
+
+
+# ---- карточка тарифа в кабинете: подзаголовок, скорость, премиум-серверы ----
+
+
+def test_settings_screen_shows_card_fields_and_their_actions() -> None:
+    tariff = _tariff(tagline='Для <всех>', speed_limit_mbps=500, has_premium_servers=True)
+
+    rendered = mod.render_panel_settings(tariff)
+    callbacks = _callbacks(mod.get_panel_settings_keyboard(tariff, 'ru'))
+
+    assert 'Для &lt;всех&gt;' in rendered
+    assert 'до 500 Мбит/с' in rendered
+    assert 'Премиум-серверы: ✅ Да' in rendered
+    assert {'admin_tariff_edit_tagline:7', 'admin_tariff_edit_speed:7', 'admin_tariff_toggle_premium:7'} <= set(
+        callbacks
+    )
+
+
+def test_settings_screen_tolerates_tariff_without_card_fields() -> None:
+    rendered = mod.render_panel_settings(_tariff())
+
+    assert 'Подзаголовок: нет' in rendered
+    assert 'Скорость: не указана' in rendered
+    assert 'Премиум-серверы: ❌ Нет' in rendered
+
+
+async def test_premium_servers_toggle_flips_the_flag(monkeypatch) -> None:
+    tariff = _tariff(has_premium_servers=False)
+    updates: list = []
+    monkeypatch.setattr(mod, 'get_tariff_by_id', AsyncMock(return_value=tariff))
+    _recording_update(monkeypatch, updates)
+
+    callback = _callback('admin_tariff_toggle_premium:7')
+    await _unwrap(mod.toggle_premium_servers)(callback, SimpleNamespace(language='ru'), MagicMock())
+    await _unwrap(mod.toggle_premium_servers)(
+        _callback('admin_tariff_toggle_premium:7'), SimpleNamespace(language='ru'), MagicMock()
+    )
+
+    assert updates == [{'has_premium_servers': True}, {'has_premium_servers': False}]
+    callback.message.edit_text.assert_awaited()
+
+
+async def test_tagline_is_saved_trimmed_and_dash_clears(monkeypatch) -> None:
+    tariff = _tariff()
+    updates: list = []
+    monkeypatch.setattr(mod, 'get_tariff_by_id', AsyncMock(return_value=tariff))
+    _recording_update(monkeypatch, updates)
+    state = _state()
+
+    await _unwrap(mod.process_tagline_input)(
+        _message('  Быстро и надёжно  '), SimpleNamespace(language='ru'), MagicMock(), state
+    )
+    await _unwrap(mod.process_tagline_input)(_message('-'), SimpleNamespace(language='ru'), MagicMock(), _state())
+
+    assert updates == [{'tagline': 'Быстро и надёжно'}, {'tagline': ''}]
+    state.clear.assert_awaited()
+
+
+async def test_tagline_longer_than_cabinet_limit_is_refused(monkeypatch) -> None:
+    tariff = _tariff()
+    updates: list = []
+    monkeypatch.setattr(mod, 'get_tariff_by_id', AsyncMock(return_value=tariff))
+    _recording_update(monkeypatch, updates)
+    message = _message('x' * (mod.TAGLINE_MAX_LENGTH + 1))
+    state = _state()
+
+    await _unwrap(mod.process_tagline_input)(message, SimpleNamespace(language='ru'), MagicMock(), state)
+
+    assert updates == []
+    state.clear.assert_not_awaited()
+    assert str(mod.TAGLINE_MAX_LENGTH) in message.answer.await_args.args[0]
+
+
+async def test_speed_limit_accepts_cabinet_range_and_dash_clears(monkeypatch) -> None:
+    tariff = _tariff()
+    updates: list = []
+    monkeypatch.setattr(mod, 'get_tariff_by_id', AsyncMock(return_value=tariff))
+    _recording_update(monkeypatch, updates)
+    refused = []
+    for raw in ('0', '100001', 'fast', '1.5'):
+        message = _message(raw)
+        state = _state()
+        await _unwrap(mod.process_speed_limit_input)(message, SimpleNamespace(language='ru'), MagicMock(), state)
+        state.clear.assert_not_awaited()
+        refused.append(message.answer.await_args.args[0])
+
+    await _unwrap(mod.process_speed_limit_input)(_message('300'), SimpleNamespace(language='ru'), MagicMock(), _state())
+    await _unwrap(mod.process_speed_limit_input)(_message('-'), SimpleNamespace(language='ru'), MagicMock(), _state())
+
+    assert updates == [{'speed_limit_mbps': 300}, {'speed_limit_mbps': None}]
+    assert all('целое число' in text for text in refused)
+
+
+def test_card_field_edit_handlers_are_registered() -> None:
+    dp = MagicMock()
+
+    mod.register_panel_settings_handlers(dp)
+
+    callback_handlers = {call.args[0] for call in dp.callback_query.register.call_args_list}
+    message_handlers = {call.args[0] for call in dp.message.register.call_args_list}
+    assert {mod.toggle_premium_servers, mod.start_edit_tagline, mod.start_edit_speed_limit} <= callback_handlers
+    assert {mod.process_tagline_input, mod.process_speed_limit_input} <= message_handlers
