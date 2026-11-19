@@ -202,6 +202,7 @@ class BotConfigurationService:
         'JUPITER': '🪐 Jupiter',
         'CISPAY': '💳 CisPay',
         'CASHERA': '💳 Cashera',
+        'PAYHOT': '💳 PayHot',
         'ANORE': '💳 Anore',
         'TABPAY': '💳 TabPay',
         'PARITYPAY': '💳 ParityPay',
@@ -281,6 +282,7 @@ class BotConfigurationService:
         'JUPITER': 'Jupiter (FPGate P2P v2.1): app.juppiter.tech, эквайринг СБП с HMAC-SHA256.',
         'CISPAY': 'CisPay: карта, СБП и опциональная криптовалюта на странице провайдера; webhook HMAC-SHA256.',
         'CASHERA': 'Cashera: api.cashera.cash, СБП, карты, крипта и CryptoBot; ключ pk_, секрет sk_, методы оплаты.',
+        'PAYHOT': 'PayHot: RUB, карты, СБП, SberPay, криптовалюта и кошельки. Подписанные webhook.',
         'ANORE': 'Anore: рублёвые счета, СБП, карты, ЮMoney и криптовалюта. Webhook HMAC-SHA256.',
         'TABPAY': 'TabPay: tabpay.org, СБП и карты с 3-D Secure; вебхуки подписаны HMAC-SHA256 (X-Signature-V2).',
         'PARITYPAY': 'ParityPay: api.paritypay.net v2, СБП и карты; уведомления подписаны HMAC-SHA256 (X-SIGNATURE).',
@@ -489,6 +491,7 @@ class BotConfigurationService:
         'USER_ACTION_LOG_RETENTION_DAYS': 'MONITORING',
         'CABINET_BUTTON_STYLE': 'INTERFACE',
         'CONNECT_BUTTON_MODE': 'CONNECT_BUTTON',
+        'SUBSCRIPTION_MIRROR_LINKS': 'CONNECT_BUTTON',
         'MINIAPP_CUSTOM_URL': 'CONNECT_BUTTON',
         'ENABLE_DEEP_LINKS': 'ADDITIONAL',
         'APP_CONFIG_CACHE_TTL': 'ADDITIONAL',
@@ -556,6 +559,7 @@ class BotConfigurationService:
         'JUPITER_': 'JUPITER',
         'CISPAY_': 'CISPAY',
         'CASHERA_': 'CASHERA',
+        'PAYHOT_': 'PAYHOT',
         'ANORE_': 'ANORE',
         'TABPAY_': 'TABPAY',
         'PARITYPAY_': 'PARITYPAY',
@@ -763,6 +767,22 @@ class BotConfigurationService:
             'значки globe, youtube, infinity, plus, check.',
             'format': 'Пункты через перевод строки или ;. До 8 пунктов, текст до 80 символов.',
             'example': 'globe: Все локации; youtube: YouTube без рекламы',
+        },
+        'SUBSCRIPTION_MIRROR_LINKS': {
+            'description': 'Запасные адреса той же подписки в боте и кабинете.',
+            'format': 'Название|https://домен; несколько адресов через ; или новую строку. До 100 адресов, название до 64 символов.',
+            'warning': 'Только ваши HTTPS-домены с теми же путями подписок. Без пути, параметров и пароля. Чужой домен получит ссылку подписки. Пустое значение отключает выбор.',
+            'dependencies': 'Работает в guide, link и miniapp_subscription. При скрытой ссылке, Happ CryptoLink и miniapp_custom выбор недоступен.',
+            'example': 'Backup|https://mirror.example',
+        },
+        'PAYHOT_RECURRENT_ENABLED': {
+            'description': 'Автоплатежи HOT Pay картой и СБП для авторизованных пользователей бота и кабинета.',
+            'format': 'Булево значение (да/нет).',
+            'example': 'false',
+            'warning': 'Первое подтверждение оплачивает период сейчас. Следующее списание — по окончании '
+            'оплаченного срока. Отключение настройки закрывает новые подключения, но не отменяет '
+            'действующие автоплатежи: отменяйте их в карточке подписки.',
+            'dependencies': 'PAYHOT_ENABLED, PAYHOT_API_KEY, PAYHOT_WEBHOOK_SECRET, PAYHOT_PAYMENT_METHODS',
         },
         'CISPAY_RECURRENT_ENABLED': {
             'description': 'Автопродление тарифов через СБП CisPay в боте и кабинете.',
@@ -2514,6 +2534,19 @@ class BotConfigurationService:
                     )
                 )
 
+        if key == 'SUBSCRIPTION_MIRROR_LINKS':
+            from app.utils.subscription_mirrors import parse_mirror_origins
+
+            try:
+                parse_mirror_origins(parsed_value, strict=True)
+            except ValueError as error:
+                raise ValueError(
+                    cls._metadata_text(
+                        'SETTINGS_SUBSCRIPTION_MIRROR_LINKS_INVALID',
+                        'Use Label|https://domain, separated by semicolons. HTTPS origins only, no path or credentials; label up to 64 characters, at most 100 addresses.',
+                        language,
+                    )
+                ) from error
         return parsed_value
 
     @classmethod
@@ -2540,6 +2573,11 @@ class BotConfigurationService:
         """
         if cls.is_read_only(key) and not force:
             raise ReadOnlySettingError(f'Setting {key} is read-only')
+
+        if key == 'SUBSCRIPTION_MIRROR_LINKS':
+            from app.utils.subscription_mirrors import parse_mirror_origins
+
+            parse_mirror_origins(value, strict=True)
 
         from app.services.cispay_recurrent_guard import guard_cispay_credentials
 
