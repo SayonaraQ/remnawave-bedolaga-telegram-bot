@@ -4270,6 +4270,9 @@
 - `tests/database/test_expired_trial_conversion_postgres.py` — Python-модуль
   Классы: `Panel` (8 методов)
   Функции: `test_expired_trial_purchase_preserves_identity`, `test_hwid_retry_completes_trial_traffic_reset_without_recharging`, `test_conversion_candidate_priority_and_exclusions`, `test_concurrent_purchases_do_not_convert_same_trial_twice`, `test_missing_trial_panel_account_is_recreated_without_a_second_database_row`, `test_trial_conversion_matrix`
+- `tests/database/test_fork_grace_switch_explained_postgres.py` — Python-модуль
+  Классы: нет
+  Функции: `test_managed_subscription_in_grace_gets_coded_refusal`, `test_managed_subscription_without_grace_still_previews`, `test_legacy_subscription_ignores_the_grace_flag`
 - `tests/database/test_fork_legacy_grace_topup_postgres.py` — Python-модуль
   Классы: нет
   Функции: `test_legacy_topup_in_traffic_grace_stays_legacy`, `test_legacy_topup_refuses_ineligible_grace`
