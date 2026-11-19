@@ -59,6 +59,26 @@ async def _resolve_switch_subscription(
     return await resolve_subscription(db, user, subscription_id)
 
 
+# Форк: managed-подписка в открытом grace тариф не меняет (prepare_admin_tariff_accounting
+# отказывает, пока сессия не закрыта докупкой или сбросом). Раньше превью отвечало
+# can_switch=true, а сама смена — 409 по-английски; теперь отказ сразу и с кодом,
+# который кабинет переводит в «докупите трафик или дождитесь сброса».
+GRACE_SWITCH_UNAVAILABLE = {
+    'code': 'grace_switch_unavailable',
+    'message': 'Tariff changes are unavailable while traffic is exhausted. Top up traffic or wait for the reset.',
+}
+
+
+async def _managed_subscription_in_grace(db: AsyncSession, subscription) -> bool:
+    if getattr(subscription, 'traffic_accounting_mode', None) != 'managed':
+        return False
+    if getattr(subscription, 'grace_session_open', False):
+        return True
+    from app.services.grace_access_runtime import get_open_grace_subscription_ids
+
+    return subscription.id in await get_open_grace_subscription_ids(db)
+
+
 @router.post('/tariff/switch/preview')
 async def preview_tariff_switch(
     request: TariffPurchaseRequest,
@@ -117,6 +137,8 @@ async def preview_tariff_switch(
                 'message': f'Subscription is not active (status: {actual_status}). Cannot switch tariff.',
             },
         )
+    if await _managed_subscription_in_grace(db, subscription):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=GRACE_SWITCH_UNAVAILABLE)
 
     current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
     new_tariff = await get_tariff_by_id(db, request.tariff_id)
@@ -258,9 +280,14 @@ async def switch_tariff(
     from app.database.crud.user import lock_user_for_pricing
     from app.services.traffic_purchase_service import prepare_user_tariff_switch
 
+    if await _managed_subscription_in_grace(db, resolved):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=GRACE_SWITCH_UNAVAILABLE)
     try:
         subscription, accounting_panel = await prepare_user_tariff_switch(db, resolved)
     except ValueError as error:
+        # Grace мог открыться между проверкой выше и блокировкой учёта.
+        if 'unavailable during grace' in str(error):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=GRACE_SWITCH_UNAVAILABLE) from error
         raise HTTPException(status_code=409, detail=str(error)) from error
     user = await lock_user_for_pricing(db, user.id)
     if subscription.user_id != user.id:
