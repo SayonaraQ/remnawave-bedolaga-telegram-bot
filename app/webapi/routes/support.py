@@ -13,7 +13,6 @@ from app.config import settings
 from app.database.crud.ticket import TicketCRUD
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.models import Subscription, Ticket, User
-from app.services.grace_access_runtime import get_open_grace_subscription_ids
 
 from ..dependencies import get_db_session
 from ..schemas.support import (
@@ -80,12 +79,9 @@ async def _load_subscriptions(db: AsyncSession, user_id: int) -> list[Subscripti
     return list(result.all())
 
 
-async def _open_grace_ids(db: AsyncSession) -> set[int]:
-    return await get_open_grace_subscription_ids(db)
-
-
 async def _has_open_ticket(db: AsyncSession, user_id: int) -> bool:
-    return bool(await TicketCRUD.get_user_tickets(db, user_id=user_id, status='open', limit=1))
+    # open or answered: the same «active ticket» rule the bot itself uses
+    return await TicketCRUD.user_has_active_ticket(db, user_id)
 
 
 @router.get('/card/{telegram_id}', response_model=SupportCard, dependencies=[Depends(require_support_token)])
@@ -104,7 +100,6 @@ async def get_support_card(telegram_id: int, db: AsyncSession = Depends(get_db_s
         )
 
     subscriptions = await _load_subscriptions(db, user.id)
-    grace_ids = await _open_grace_ids(db)
     return SupportCard(
         telegram_id=telegram_id,
         registered=True,
@@ -126,7 +121,8 @@ async def get_support_card(telegram_id: int, db: AsyncSession = Depends(get_db_s
                 traffic_accounting_mode=sub.traffic_accounting_mode,
                 device_limit=sub.device_limit,
                 autopay_enabled=bool(sub.autopay_enabled),
-                grace_open=sub.id in grace_ids,
+                # per-row flag kept by the grace store in the same transaction; correct in every grace mode
+                grace_open=bool(getattr(sub, 'grace_session_open', False)),
                 panel_user_id=sub.remnawave_id,
             )
             for sub in subscriptions
@@ -188,7 +184,8 @@ async def get_support_ticket(ticket_id: int, db: AsyncSession = Depends(get_db_s
                 id=message.id,
                 is_from_admin=message.is_from_admin,
                 text=message.message_text,
-                has_media=bool(message.has_media),
+                # albums keep their files in media_items and may leave has_media unset
+                has_media=bool(message.has_media) or bool(getattr(message, 'media_items', None)),
                 created_at=message.created_at,
             )
             for message in sorted(ticket.messages, key=lambda message: message.id)

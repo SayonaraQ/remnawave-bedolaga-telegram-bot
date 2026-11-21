@@ -77,8 +77,9 @@ def _patch_loaders(monkeypatch, *, user, subs=(), grace=frozenset(), open_ticket
     from app.webapi.routes import support
 
     monkeypatch.setattr(support, '_load_user', AsyncMock(return_value=user))
+    for sub in subs:
+        sub.grace_session_open = sub.id in grace
     monkeypatch.setattr(support, '_load_subscriptions', AsyncMock(return_value=list(subs)))
-    monkeypatch.setattr(support, '_open_grace_ids', AsyncMock(return_value=set(grace)))
     monkeypatch.setattr(support, '_has_open_ticket', AsyncMock(return_value=open_ticket))
     return support
 
@@ -244,8 +245,15 @@ def test_list_maps_user_telegram_id(monkeypatch):
     assert resp.status_code == 200
     item = resp.json()[0]
     assert set(item) == {
-        'id', 'user_telegram_id', 'status', 'priority', 'title', 'created_at', 'updated_at',
-        'last_message_id', 'last_message_from_admin',
+        'id',
+        'user_telegram_id',
+        'status',
+        'priority',
+        'title',
+        'created_at',
+        'updated_at',
+        'last_message_id',
+        'last_message_from_admin',
     }
     assert item['user_telegram_id'] == 111 and item['last_message_id'] == 3 and item['last_message_from_admin'] is False
     support._load_tickets.assert_awaited_once()
@@ -258,7 +266,9 @@ def test_get_ticket_with_messages(monkeypatch):
     monkeypatch.setattr(support, '_load_ticket', AsyncMock(return_value=_ticket(5)))
     body = _client().get('/support/tickets/5', headers=_auth()).json()
     assert [(m['id'], m['is_from_admin'], m['text']) for m in body['messages']] == [
-        (1, False, 'не работает'), (2, True, 'проверим'), (3, False, 'ещё'),
+        (1, False, 'не работает'),
+        (2, True, 'проверим'),
+        (3, False, 'ещё'),
     ]
     assert set(body['messages'][0]) == {'id', 'is_from_admin', 'text', 'has_media', 'created_at'}
 
@@ -316,3 +326,37 @@ def test_priority_delegates(monkeypatch):
 
 def test_priority_invalid_422():
     assert _client().post('/support/tickets/5/priority', headers=_auth(), json={'priority': 'max'}).status_code == 422
+
+
+# ---------------------------------------------------------------- code review 22.11
+
+
+def test_card_grace_from_subscription_column(monkeypatch):
+    # grace runtime in OBSERVE/DISABLED returns no open ids, but the per-row column still knows
+    support = _patch_loaders(monkeypatch, user=_user(), subs=[_subscription(10), _subscription(11)])
+    monkeypatch.setattr(support, '_open_grace_ids', AsyncMock(return_value=set()), raising=False)
+    subs = support._load_subscriptions.return_value
+    subs[0].grace_session_open, subs[1].grace_session_open = False, True
+    body = _client().get('/support/card/111', headers=_auth()).json()
+    assert {s['id']: s['grace_open'] for s in body['subscriptions']} == {10: False, 11: True}
+
+
+@pytest.mark.asyncio
+async def test_has_open_ticket_counts_answered(monkeypatch):
+    from app.webapi.routes import support
+
+    monkeypatch.setattr(support.TicketCRUD, 'get_user_tickets', AsyncMock(return_value=[]))
+    monkeypatch.setattr(support.TicketCRUD, 'user_has_active_ticket', AsyncMock(return_value=True))
+    assert await support._has_open_ticket(None, 7) is True
+
+
+def test_ticket_message_media_items_count_as_media(monkeypatch):
+    from app.webapi.routes import support
+
+    ticket = _ticket(5)
+    album = _message(9, False, '')
+    album.media_items = [{'type': 'photo', 'file_id': 'f'}]
+    ticket.messages.append(album)
+    monkeypatch.setattr(support, '_load_ticket', AsyncMock(return_value=ticket))
+    body = _client().get('/support/tickets/5', headers=_auth()).json()
+    assert {m['id']: m['has_media'] for m in body['messages']}[9] is True
