@@ -1545,6 +1545,8 @@ class Settings(BaseSettings):
     # предохранитель: агент, ошибшийся на два нуля, упрётся в лимит, а не подарит
     # человеку годовую подписку. 0 — без ограничения.
     WEB_API_MANUAL_DEPOSIT_MAX_KOPEKS: int = 1_000_000
+    SUPPORT_API_TOKEN: str | None = None
+    SUPPORT_API_ALLOWED_IPS: str = ''
 
     ENABLE_DEEP_LINKS: bool = True
     APP_CONFIG_CACHE_TTL: int = 3600

@@ -35,6 +35,7 @@ from .routes import (
     stats,
     subscription_events,
     subscriptions,
+    support,
     tickets,
     tokens,
     transactions,
@@ -275,6 +276,7 @@ def create_web_api_app(lifespan: Any = None) -> FastAPI:
         tags=['notifications'],
     )
     app.include_router(webhooks.router, prefix='/webhooks', tags=['webhooks'])
+    app.include_router(support.router, prefix='/support', tags=['support'])
     app.include_router(websocket.router, tags=['websocket'])
     app.include_router(
         ban_notifications.router,
