@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SupportSubscription(BaseModel):
@@ -31,3 +32,46 @@ class SupportCard(BaseModel):
     has_open_ticket: bool
     subscriptions: list[SupportSubscription]
     connect_urls: dict[int, str]
+
+
+SupportTicketStatus = Literal['open', 'answered', 'closed', 'pending']
+
+
+class SupportTicket(BaseModel):
+    id: int
+    user_telegram_id: int | None
+    status: str
+    priority: str
+    title: str
+    created_at: datetime | None
+    updated_at: datetime | None
+    last_message_id: int | None
+    last_message_from_admin: bool | None
+
+
+class SupportTicketMessage(BaseModel):
+    id: int
+    is_from_admin: bool
+    text: str
+    has_media: bool
+    created_at: datetime | None
+
+
+class SupportTicketDetail(SupportTicket):
+    messages: list[SupportTicketMessage]
+
+
+class SupportReplyRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class SupportReplyResponse(BaseModel):
+    message_id: int
+
+
+class SupportStatusRequest(BaseModel):
+    status: SupportTicketStatus
+
+
+class SupportPriorityRequest(BaseModel):
+    priority: Literal['low', 'normal', 'high', 'urgent']

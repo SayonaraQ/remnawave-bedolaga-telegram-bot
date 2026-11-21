@@ -191,3 +191,128 @@ def test_support_routes_mounted_in_app():
     client = TestClient(create_web_api_app(), client=('100.76.105.148', 50000))
     # mounted: a disallowed client gets 403 from the support guard, not 404
     assert client.get('/support/card/111', headers=_auth()).status_code == 403
+
+
+# ---------------------------------------------------------------- tickets (Task 3)
+
+
+def _message(mid: int, from_admin: bool, text: str = 'текст') -> SimpleNamespace:
+    return SimpleNamespace(
+        id=mid,
+        is_from_admin=from_admin,
+        message_text=text,
+        has_media=False,
+        created_at=datetime(2026, 11, 21, 12, mid % 60, tzinfo=UTC),
+    )
+
+
+def _ticket(tid: int = 5) -> SimpleNamespace:
+    now = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
+    return SimpleNamespace(
+        id=tid,
+        user=SimpleNamespace(telegram_id=111, email='client@example.com'),
+        status='open',
+        priority='normal',
+        title='Не работает',
+        created_at=now,
+        updated_at=now,
+        messages=[_message(1, False, 'не работает'), _message(2, True, 'проверим'), _message(3, False, 'ещё')],
+    )
+
+
+@pytest.mark.parametrize(
+    ('method', 'path', 'body'),
+    [
+        ('get', '/support/tickets', None),
+        ('get', '/support/tickets/5', None),
+        ('post', '/support/tickets/5/reply', {'text': 'x'}),
+        ('post', '/support/tickets/5/status', {'status': 'open'}),
+        ('post', '/support/tickets/5/priority', {'priority': 'high'}),
+    ],
+)
+def test_ticket_routes_require_token(method, path, body):
+    client = _client()
+    resp = getattr(client, method)(path, json=body) if body else getattr(client, method)(path)
+    assert resp.status_code == 401
+
+
+def test_list_maps_user_telegram_id(monkeypatch):
+    from app.webapi.routes import support
+
+    monkeypatch.setattr(support, '_load_tickets', AsyncMock(return_value=[_ticket(5)]))
+    resp = _client().get('/support/tickets?status=open&limit=50', headers=_auth())
+    assert resp.status_code == 200
+    item = resp.json()[0]
+    assert set(item) == {
+        'id', 'user_telegram_id', 'status', 'priority', 'title', 'created_at', 'updated_at',
+        'last_message_id', 'last_message_from_admin',
+    }
+    assert item['user_telegram_id'] == 111 and item['last_message_id'] == 3 and item['last_message_from_admin'] is False
+    support._load_tickets.assert_awaited_once()
+    assert 'client@example.com' not in resp.text
+
+
+def test_get_ticket_with_messages(monkeypatch):
+    from app.webapi.routes import support
+
+    monkeypatch.setattr(support, '_load_ticket', AsyncMock(return_value=_ticket(5)))
+    body = _client().get('/support/tickets/5', headers=_auth()).json()
+    assert [(m['id'], m['is_from_admin'], m['text']) for m in body['messages']] == [
+        (1, False, 'не работает'), (2, True, 'проверим'), (3, False, 'ещё'),
+    ]
+    assert set(body['messages'][0]) == {'id', 'is_from_admin', 'text', 'has_media', 'created_at'}
+
+
+def test_get_ticket_missing_404(monkeypatch):
+    from app.webapi.routes import support
+
+    monkeypatch.setattr(support, '_load_ticket', AsyncMock(return_value=None))
+    assert _client().get('/support/tickets/5', headers=_auth()).status_code == 404
+
+
+def test_reply_delegates_and_returns_message_id(monkeypatch):
+    from app.webapi.routes import support
+
+    fake = AsyncMock(return_value=SimpleNamespace(message=SimpleNamespace(id=77)))
+    monkeypatch.setattr(support.tickets, 'reply_to_ticket', fake)
+    resp = _client().post('/support/tickets/5/reply', headers=_auth(), json={'text': 'Здравствуйте'})
+    assert resp.status_code == 200 and resp.json() == {'message_id': 77}
+    kwargs = fake.await_args.kwargs
+    assert kwargs['ticket_id'] == 5 and kwargs['payload'].message_text == 'Здравствуйте'
+
+
+def test_reply_text_too_long_422():
+    resp = _client().post('/support/tickets/5/reply', headers=_auth(), json={'text': 'я' * 4001})
+    assert resp.status_code == 422
+
+
+def test_reply_empty_422():
+    assert _client().post('/support/tickets/5/reply', headers=_auth(), json={'text': ''}).status_code == 422
+
+
+def test_status_delegates(monkeypatch):
+    from app.webapi.routes import support
+
+    fake = AsyncMock(return_value=None)
+    monkeypatch.setattr(support.tickets, 'update_ticket_status', fake)
+    resp = _client().post('/support/tickets/5/status', headers=_auth(), json={'status': 'open'})
+    assert resp.status_code == 200
+    assert fake.await_args.kwargs['payload'].status == 'open'
+
+
+def test_status_invalid_422():
+    assert _client().post('/support/tickets/5/status', headers=_auth(), json={'status': 'deleted'}).status_code == 422
+
+
+def test_priority_delegates(monkeypatch):
+    from app.webapi.routes import support
+
+    fake = AsyncMock(return_value=None)
+    monkeypatch.setattr(support.tickets, 'update_ticket_priority', fake)
+    resp = _client().post('/support/tickets/5/priority', headers=_auth(), json={'priority': 'high'})
+    assert resp.status_code == 200
+    assert fake.await_args.kwargs['payload'].priority == 'high'
+
+
+def test_priority_invalid_422():
+    assert _client().post('/support/tickets/5/priority', headers=_auth(), json={'priority': 'max'}).status_code == 422
