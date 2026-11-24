@@ -1,21 +1,33 @@
+"""Expose attachment indexes for ticket albums and legacy single files.
+
+The media endpoint serves client messages so the assistant can inspect screenshots
+while staff uploads stay private. It checks file signatures because filenames and
+Telegram metadata do not establish that an attachment is an image.
+"""
+
 from __future__ import annotations
 
+import asyncio
 import hmac
 from ipaddress import ip_address, ip_network
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security.utils import get_authorization_scheme_param
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.bot_factory import create_bot
 from app.config import settings
 from app.database.crud.ticket import TicketCRUD
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.models import Subscription, Ticket, User
+from app.utils.ticket_media import get_ticket_media
 
 from ..dependencies import get_db_session
 from ..schemas.support import (
+    SupportAttachment,
     SupportCard,
     SupportPriorityRequest,
     SupportReplyRequest,
@@ -32,6 +44,9 @@ from . import tickets
 
 
 router = APIRouter()
+logger = structlog.get_logger(__name__)
+
+SUPPORT_MEDIA_MAX_BYTES = 5_000_000
 
 
 def _is_allowed_client(host: str) -> bool:
@@ -187,9 +202,82 @@ async def get_support_ticket(ticket_id: int, db: AsyncSession = Depends(get_db_s
                 # albums keep their files in media_items and may leave has_media unset
                 has_media=bool(message.has_media) or bool(getattr(message, 'media_items', None)),
                 created_at=message.created_at,
+                attachments=[
+                    SupportAttachment(index=index, type=item['type'])
+                    for index, item in enumerate(get_ticket_media(message))
+                ],
             )
             for message in sorted(ticket.messages, key=lambda message: message.id)
         ],
+    )
+
+
+def _support_image_type(data: bytes) -> str | None:
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
+
+
+@router.get('/tickets/{ticket_id}/messages/{message_id}/media/{index}', dependencies=[Depends(require_support_token)])
+async def get_support_ticket_media(
+    ticket_id: int, message_id: int, index: int, db: AsyncSession = Depends(get_db_session)
+) -> Response:
+    ticket = await _load_ticket(db, ticket_id)
+    if ticket is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Ticket not found')
+
+    message = next((message for message in ticket.messages if message.id == message_id), None)
+    if message is None or message.is_from_admin:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Message not found')
+
+    attachments = get_ticket_media(message)
+    if not 0 <= index < len(attachments):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Attachment not found')
+    item = attachments[index]
+    if item['type'] == 'video':
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, 'Unsupported attachment type')
+
+    try:
+        bot = create_bot()
+        try:
+            file = await bot.get_file(item['file_id'])
+            if file.file_size is not None and file.file_size > SUPPORT_MEDIA_MAX_BYTES:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, 'Attachment is too large')
+            if not file.file_path:
+                raise ValueError('Telegram did not return a file path')
+            async with asyncio.timeout(20):
+                buffer = await bot.download_file(file.file_path)
+            if buffer is None:
+                raise ValueError('Telegram did not return a download buffer')
+            data = buffer.read(SUPPORT_MEDIA_MAX_BYTES + 1)
+        finally:
+            await bot.session.close()
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning(
+            'Failed to download ticket media',
+            ticket_id=ticket_id,
+            message_id=message_id,
+            index=index,
+            error_type=type(error).__name__,
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, 'Failed to download ticket media') from None
+
+    if len(data) > SUPPORT_MEDIA_MAX_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, 'Attachment is too large')
+    media_type = _support_image_type(data)
+    if media_type is None:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, 'Unsupported attachment type')
+
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'},
     )
 
 

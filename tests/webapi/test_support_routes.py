@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from app.config import settings
 from app.webapi.dependencies import get_db_session
@@ -15,6 +18,7 @@ from app.webapi.dependencies import get_db_session
 
 TOKEN = 's' * 48
 ALLOWED_HOST = '172.18.0.50'
+MEDIA_PATH = '/support/tickets/5/messages/1/media'
 
 
 @pytest.fixture(autouse=True)
@@ -270,7 +274,7 @@ def test_get_ticket_with_messages(monkeypatch):
         (2, True, 'проверим'),
         (3, False, 'ещё'),
     ]
-    assert set(body['messages'][0]) == {'id', 'is_from_admin', 'text', 'has_media', 'created_at'}
+    assert set(body['messages'][0]) == {'id', 'is_from_admin', 'text', 'has_media', 'created_at', 'attachments'}
 
 
 def test_get_ticket_missing_404(monkeypatch):
@@ -350,13 +354,182 @@ async def test_has_open_ticket_counts_answered(monkeypatch):
     assert await support._has_open_ticket(None, 7) is True
 
 
-def test_ticket_message_media_items_count_as_media(monkeypatch):
+def test_ticket_detail_lists_album_and_legacy_attachments(monkeypatch):
     from app.webapi.routes import support
 
     ticket = _ticket(5)
     album = _message(9, False, '')
-    album.media_items = [{'type': 'photo', 'file_id': 'f'}]
-    ticket.messages.append(album)
+    album.media_items = [
+        {'type': 'photo', 'file_id': 'album-photo'},
+        {'type': 'video', 'file_id': 'album-video'},
+        {'type': 'document', 'file_id': 'album-document'},
+    ]
+    legacy = _message(10, False, '')
+    legacy.has_media = True
+    legacy.media_type = 'photo'
+    legacy.media_file_id = 'legacy-photo'
+    ticket.messages.extend([album, legacy])
     monkeypatch.setattr(support, '_load_ticket', AsyncMock(return_value=ticket))
     body = _client().get('/support/tickets/5', headers=_auth()).json()
-    assert {m['id']: m['has_media'] for m in body['messages']}[9] is True
+    messages = {message['id']: message for message in body['messages']}
+    assert messages[9]['has_media'] is True
+    assert messages[9]['attachments'] == [
+        {'index': 0, 'type': 'photo'},
+        {'index': 1, 'type': 'video'},
+        {'index': 2, 'type': 'document'},
+    ]
+    assert messages[10]['has_media'] is True
+    assert messages[10]['attachments'] == [{'index': 0, 'type': 'photo'}]
+    assert messages[1]['has_media'] is False
+    assert messages[1]['attachments'] == []
+
+
+@pytest.fixture
+def ticket_media(monkeypatch):
+    from app.webapi.routes import support
+
+    ticket = _ticket(5)
+    ticket.messages[0].media_items = [
+        {'type': 'photo', 'file_id': 'client-photo'},
+        {'type': 'video', 'file_id': 'client-video'},
+        {'type': 'document', 'file_id': 'client-document'},
+    ]
+    ticket.messages[1].media_items = [{'type': 'photo', 'file_id': 'admin-photo'}]
+    other_ticket = _ticket(6)
+    other_ticket.messages[0] = _message(9, False)
+    other_ticket.messages[0].media_items = [{'type': 'photo', 'file_id': 'other-ticket-photo'}]
+    tickets_by_id = {5: ticket, 6: other_ticket}
+    load_ticket = AsyncMock(side_effect=lambda db, ticket_id: tickets_by_id.get(ticket_id))
+    monkeypatch.setattr(support, '_load_ticket', load_ticket)
+
+    bot = SimpleNamespace(
+        get_file=AsyncMock(return_value=SimpleNamespace(file_size=None, file_path='files/attachment.png')),
+        download_file=AsyncMock(),
+        session=SimpleNamespace(close=AsyncMock()),
+    )
+    create_bot = Mock(return_value=bot)
+    monkeypatch.setattr(support, 'create_bot', create_bot)
+    return SimpleNamespace(bot=bot, create_bot=create_bot, load_ticket=load_ticket)
+
+
+@pytest.mark.parametrize(
+    ('index', 'file_id', 'data', 'mime'),
+    [
+        (0, 'client-photo', b'\xff\xd8\xffjpeg-data', 'image/jpeg'),
+        (2, 'client-document', b'\x89PNG\r\n\x1a\npng-data', 'image/png'),
+        (2, 'client-document', b'RIFF\x04\x00\x00\x00WEBPwebp-data', 'image/webp'),
+    ],
+    ids=['jpeg-photo', 'png-document', 'webp-document'],
+)
+def test_ticket_media_returns_image(ticket_media, index, file_id, data, mime):
+    bot = ticket_media.bot
+    bot.download_file.return_value = BytesIO(data)
+
+    resp = _client().get(f'{MEDIA_PATH}/{index}', headers=_auth())
+
+    assert resp.status_code == 200
+    assert resp.headers['Content-Type'] == mime
+    assert resp.headers['Cache-Control'] == 'no-store'
+    assert resp.headers['X-Content-Type-Options'] == 'nosniff'
+    assert resp.content == data
+    bot.get_file.assert_awaited_once_with(file_id)
+    bot.download_file.assert_awaited_once_with('files/attachment.png')
+    bot.session.close.assert_awaited_once()
+
+
+def test_ticket_media_rejects_pdf_with_image_filename(ticket_media):
+    bot = ticket_media.bot
+    bot.download_file.return_value = BytesIO(b'%PDF-1.7')
+
+    assert _client().get(f'{MEDIA_PATH}/2', headers=_auth()).status_code == 415
+    bot.download_file.assert_awaited_once()
+    bot.session.close.assert_awaited_once()
+
+
+def test_ticket_media_rejects_video_before_creating_bot(ticket_media):
+    assert _client().get(f'{MEDIA_PATH}/1', headers=_auth()).status_code == 415
+    ticket_media.create_bot.assert_not_called()
+    ticket_media.bot.download_file.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ('ticket_id', 'message_id', 'index'),
+    [(5, 2, 0), (5, 9, 0), (5, 1, 3), (5, 1, -1), (999, 1, 0)],
+    ids=['admin-message', 'other-ticket-message', 'index-too-high', 'negative-index', 'unknown-ticket'],
+)
+def test_ticket_media_rejects_missing_or_ineligible_attachment(ticket_media, ticket_id, message_id, index):
+    path = f'/support/tickets/{ticket_id}/messages/{message_id}/media/{index}'
+    assert _client().get(path, headers=_auth()).status_code == 404
+    ticket_media.load_ticket.assert_awaited_once_with(ANY, ticket_id)
+    ticket_media.create_bot.assert_not_called()
+
+
+def test_ticket_media_checks_reported_size_before_download(ticket_media):
+    bot = ticket_media.bot
+    bot.get_file.return_value.file_size = 5_000_001
+
+    assert _client().get(f'{MEDIA_PATH}/0', headers=_auth()).status_code == 413
+    bot.download_file.assert_not_called()
+    bot.session.close.assert_awaited_once()
+
+
+def test_ticket_media_checks_download_size_when_reported_size_is_unknown(ticket_media):
+    bot = ticket_media.bot
+    bot.download_file.return_value = BytesIO(b'\xff\xd8\xff'.ljust(5_000_001, b'\x00'))
+
+    assert _client().get(f'{MEDIA_PATH}/0', headers=_auth()).status_code == 413
+    bot.download_file.assert_awaited_once()
+    bot.session.close.assert_awaited_once()
+
+
+def test_ticket_media_handles_telegram_error(ticket_media):
+    bot = ticket_media.bot
+    private_detail = 'client-photo private-bot-token'
+    bot.get_file.side_effect = RuntimeError(private_detail)
+
+    with capture_logs() as logs:
+        resp = _client().get(f'{MEDIA_PATH}/0', headers=_auth())
+
+    assert resp.status_code == 502
+    assert resp.json() == {'detail': 'Failed to download ticket media'}
+    warnings = [event for event in logs if event['log_level'] == 'warning']
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert {key: value for key, value in warning.items() if key not in {'event', 'log_level'}} == {
+        'ticket_id': 5,
+        'message_id': 1,
+        'index': 0,
+        'error_type': 'RuntimeError',
+    }
+    assert all(secret not in warning['event'] for secret in private_detail.split())
+    bot.download_file.assert_not_called()
+    bot.session.close.assert_awaited_once()
+
+
+def test_ticket_media_times_out_during_download(monkeypatch, ticket_media):
+    from app.webapi.routes import support
+
+    async def download_file(file_path):
+        await asyncio.sleep(0)
+        return BytesIO(b'\xff\xd8\xffjpeg-data')
+
+    timeout = Mock(side_effect=lambda seconds: asyncio.timeout(0))
+    monkeypatch.setattr(support, 'asyncio', SimpleNamespace(timeout=timeout))
+    bot = ticket_media.bot
+    bot.download_file.side_effect = download_file
+
+    assert _client().get(f'{MEDIA_PATH}/0', headers=_auth()).status_code == 502
+    timeout.assert_called_once_with(20)
+    bot.download_file.assert_awaited_once()
+    bot.session.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ('host', 'headers', 'expected_status'),
+    [(ALLOWED_HOST, {}, 401), ('172.18.0.1', _auth(), 403)],
+    ids=['missing-token', 'disallowed-ip'],
+)
+def test_ticket_media_requires_token_and_allowed_ip(ticket_media, host, headers, expected_status):
+    assert _client(host).get(f'{MEDIA_PATH}/0', headers=headers).status_code == expected_status
+    ticket_media.load_ticket.assert_not_called()
+    ticket_media.create_bot.assert_not_called()

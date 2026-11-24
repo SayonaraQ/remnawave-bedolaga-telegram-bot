@@ -49,12 +49,18 @@ class SupportTicket(BaseModel):
     last_message_from_admin: bool | None
 
 
+class SupportAttachment(BaseModel):
+    index: int
+    type: Literal['photo', 'video', 'document']
+
+
 class SupportTicketMessage(BaseModel):
     id: int
     is_from_admin: bool
     text: str
     has_media: bool
     created_at: datetime | None
+    attachments: list[SupportAttachment] = Field(default_factory=list)
 
 
 class SupportTicketDetail(SupportTicket):
