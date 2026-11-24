@@ -189,3 +189,60 @@ async def test_managed_expiry_never_resets_spent_traffic_or_defers_expiry():
     assert sub.traffic_limit_gb == 100
     assert sub.traffic_used_gb == 130.0
     assert all(not call.kwargs.get('reset_traffic') for call in fake_ss.update_remnawave_user.await_args_list)
+
+
+async def test_expiry_waits_while_grace_is_open():
+    """Open grace: the expired package stays until grace closes (sub 2375, 23.11.2026).
+
+    Dropping the limit changed the billing snapshot under the grace overlay; the
+    grace reconciler took it for a manual edit, closed grace as a conflict and
+    restored the expired state — the client lost access two days early.
+    """
+    sub = _make_subscription('NO_RESET')
+    sub.grace_session_open = True
+    db = _make_db(sub)
+    service = _make_service(panel_used_gb=10.0)
+    fake_ss = _make_fake_subscription_service(10 * _GB)
+    with patch('app.services.subscription_service.SubscriptionService', return_value=fake_ss):
+        count = await service._expire_traffic_purchases(db, sub.id, [10])
+    assert count == 0
+    assert (sub.traffic_limit_gb, sub.purchased_traffic_gb) == (150, 50)
+    db.delete.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    fake_ss.update_remnawave_user.assert_not_awaited()
+
+
+async def test_managed_expiry_waits_while_grace_is_open():
+    sub = _make_subscription('MONTH')
+    sub.traffic_accounting_mode = 'managed'
+    sub.grace_session_open = True
+    db = _make_db(sub)
+    service = _make_service(panel_used_gb=10.0)
+    fake_ss = _make_fake_subscription_service(10 * _GB)
+    with (
+        patch('app.services.subscription_service.SubscriptionService', return_value=fake_ss),
+        patch('app.services.traffic_accounting_service.refresh_managed_account', new_callable=AsyncMock) as refresh,
+    ):
+        count = await service._expire_traffic_purchases(db, sub.id, [10])
+    assert count == 0
+    assert sub.traffic_limit_gb == 150
+    refresh.assert_not_awaited()
+    db.delete.assert_not_awaited()
+    fake_ss.update_remnawave_user.assert_not_awaited()
+
+
+async def test_expiry_waits_when_grace_opens_before_row_lock():
+    """The scan saw no grace, but grace opened before we locked the row."""
+    sub = _make_subscription('NO_RESET')
+    candidate = SimpleNamespace(**vars(sub))
+    candidate.grace_session_open = False
+    sub.grace_session_open = True
+    db = _make_db(sub)
+    db.get = AsyncMock(return_value=candidate)
+    service = _make_service(panel_used_gb=10.0)
+    fake_ss = _make_fake_subscription_service(10 * _GB)
+    with patch('app.services.subscription_service.SubscriptionService', return_value=fake_ss):
+        count = await service._expire_traffic_purchases(db, sub.id, [10])
+    assert count == 0
+    db.delete.assert_not_awaited()
+    fake_ss.update_remnawave_user.assert_not_awaited()

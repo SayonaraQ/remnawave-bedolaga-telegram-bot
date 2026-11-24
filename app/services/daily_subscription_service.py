@@ -37,6 +37,20 @@ from app.services.traffic_reset_policy import lift_panel_traffic_limit, should_r
 logger = structlog.get_logger(__name__)
 
 
+def _grace_holds_purchase_expiry(subscription, subscription_id: int) -> bool:
+    """Пока открыт grace, истёкшая докупка ждёт его закрытия.
+
+    Сверка grace сравнивает лимит трафика со снимком, снятым при выдаче, и
+    падение лимита принимает за ручную правку: grace закрывается «конфликтом»,
+    клиенту возвращается истёкшее состояние (подписка 2375, 23.11.2026).
+    Докупка снимется следующим проходом после закрытия grace.
+    """
+    if not getattr(subscription, 'grace_session_open', False):
+        return False
+    logger.info('⏸️ Истечение докупки трафика отложено: открыт grace', subscription_id=subscription_id)
+    return True
+
+
 class DailySubscriptionService:
     """
     Сервис автоматического списания для суточных подписок.
@@ -549,6 +563,8 @@ class DailySubscriptionService:
         # Acquire the accounting/grace lease before the subscription row lock.
         # A migrating account must never fall back to legacy destructive resets.
         candidate = await db.get(Subscription, subscription_id)
+        if _grace_holds_purchase_expiry(candidate, subscription_id):
+            return 0
         mode = getattr(candidate, 'traffic_accounting_mode', None)
         if mode == 'migrating':
             raise AccountingConflict('Traffic accounting migration is not complete')
@@ -569,6 +585,10 @@ class DailySubscriptionService:
         subscription = subscription_result.scalar_one_or_none()
 
         if not subscription:
+            return 0
+        # Grace opens in the same transaction that sets the flag on this row, so
+        # the row lock makes this the authoritative check.
+        if _grace_holds_purchase_expiry(subscription, subscription_id):
             return 0
 
         current_mode = getattr(subscription, 'traffic_accounting_mode', None)
