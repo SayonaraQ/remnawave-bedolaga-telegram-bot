@@ -371,6 +371,12 @@ class Settings(BaseSettings):
     NOTIFICATION_EXPIRED_WAVE3_DISCOUNT_PERCENT: int = 20
     NOTIFICATION_EXPIRED_WAVE3_VALID_HOURS: int = 24
     NOTIFICATION_EXPIRED_WAVE3_TRIGGER_DAYS: int = 5
+    # Форк: скидка на первое продление тем, кто заплатил ровно один раз. Уходит за
+    # FIRST_RENEWAL_DISCOUNT_DAYS_BEFORE дней до конца платной подписки, если автоплатёж её
+    # не продлил; скидка действует до конца текущей подписки. По умолчанию выключено.
+    FIRST_RENEWAL_DISCOUNT_ENABLED: bool = False
+    FIRST_RENEWAL_DISCOUNT_PERCENT: int = 20
+    FIRST_RENEWAL_DISCOUNT_DAYS_BEFORE: int = 3
 
     SERVER_STATUS_MODE: str = 'disabled'
     SERVER_STATUS_EXTERNAL_URL: str | None = None

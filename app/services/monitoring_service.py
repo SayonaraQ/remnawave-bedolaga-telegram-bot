@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -43,6 +43,8 @@ from app.database.models import (
     SubscriptionStatus,
     Ticket,
     TicketStatus,
+    Transaction,
+    TransactionType,
     User,
     UserPromoGroup,
     UserStatus,
@@ -464,6 +466,7 @@ class MonitoringService:
                 await self._reconcile_payhot_subscriptions(db)
                 await self._check_expired_subscriptions(db)
                 await self._check_expiring_subscriptions(db)
+                await self._check_first_renewal_discount_offers(db)
                 await self._check_trial_expiring_soon(db)
                 # Channel checks use their own batch sessions and may wait on
                 # Telegram for minutes. Release the completed outer transaction
@@ -1555,6 +1558,169 @@ class MonitoringService:
         except Exception as e:
             logger.error('Ошибка проверки напоминаний об истекшей подписке', error=e)
 
+    # ------------------------------------------------------------------
+    # Форк: скидка на первое продление (2026-11)
+    # ------------------------------------------------------------------
+
+    FIRST_RENEWAL_NOTIFICATION_TYPE = 'first_renewal_discount'
+
+    @staticmethod
+    def _first_renewal_days_text(days: int, language: str | None) -> str:
+        """«1 день / 3 дня / 5 дней» для ru и ua, иначе «N day(s)»."""
+        lang = (language or 'ru').lower()
+        n = abs(int(days))
+        if lang in ('ru', 'ua', 'uk'):
+            forms = ('день', 'дня', 'дней') if lang == 'ru' else ('день', 'дні', 'днів')
+            if n % 10 == 1 and n % 100 != 11:
+                word = forms[0]
+            elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+                word = forms[1]
+            else:
+                word = forms[2]
+            return f'{n} {word}'
+        return f'{n} day' if n == 1 else f'{n} days'
+
+    async def _count_paid_subscription_payments(self, db: AsyncSession, user_id: int) -> int:
+        """Сколько раз пользователь реально платил за подписку (списание с баланса < 0).
+
+        Нулевые записи (массовая смена тарифа) и начисления не считаются.
+        """
+        result = await db.execute(
+            select(func.count(Transaction.id)).where(
+                Transaction.user_id == user_id,
+                Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
+                Transaction.is_completed.is_(True),
+                Transaction.amount_kopeks < 0,
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def _check_first_renewal_discount_offers(self, db: AsyncSession):
+        """Скидка на первое продление тем, кто заплатил ровно один раз.
+
+        Отток среди заплативших один раз — 62 % (разбор 26.11.2026), поэтому им за
+        FIRST_RENEWAL_DISCOUNT_DAYS_BEFORE дней до конца платной подписки уходит
+        персональная скидка с кнопкой «Получить скидку». Автоплатёж в цикле идёт
+        раньше: кого он продлил, тот из выборки уже выпал. Скидка после активации
+        живёт до конца текущей подписки. Одно предложение на подписку.
+        """
+        if not settings.FIRST_RENEWAL_DISCOUNT_ENABLED:
+            return
+        if not NotificationSettingsService.are_notifications_globally_enabled():
+            return
+        if not self.bot:
+            return
+
+        from app.utils.notification_prefs import is_promo_offers_enabled
+
+        percent = max(1, min(100, int(settings.FIRST_RENEWAL_DISCOUNT_PERCENT or 0)))
+        days_before = max(1, int(settings.FIRST_RENEWAL_DISCOUNT_DAYS_BEFORE or 0))
+        sent = 0
+
+        try:
+            subscriptions = await self._get_expiring_paid_subscriptions(db, days_before)
+        except Exception as error:
+            logger.error('Скидка на первое продление: не удалось выбрать подписки', error=error)
+            return
+
+        for subscription in subscriptions:
+            user = getattr(subscription, 'user', None)
+            if not user or not user.telegram_id or subscription.end_date is None:
+                continue
+            try:
+                if not is_promo_offers_enabled(user):
+                    continue
+                if get_user_active_promo_discount_percent(user) > 0:
+                    continue
+                if await notification_sent(db, user.id, subscription.id, self.FIRST_RENEWAL_NOTIFICATION_TYPE):
+                    continue
+                if await self._count_paid_subscription_payments(db, user.id) != 1:
+                    continue
+
+                now = datetime.now(UTC)
+                seconds_left = (subscription.end_date - now).total_seconds()
+                if seconds_left <= 0:
+                    continue
+                hours_left = max(1, int(-(-seconds_left // 3600)))
+                days_left = max(1, int(-(-seconds_left // 86400)))
+
+                offer = await upsert_discount_offer(
+                    db,
+                    user_id=user.id,
+                    subscription_id=subscription.id,
+                    notification_type=self.FIRST_RENEWAL_NOTIFICATION_TYPE,
+                    discount_percent=percent,
+                    bonus_amount_kopeks=0,
+                    valid_hours=hours_left,
+                    effect_type='percent_discount',
+                    extra_data={'active_discount_hours': hours_left},
+                )
+
+                texts = get_texts(user.language)
+                message = texts.get(
+                    'FIRST_RENEWAL_DISCOUNT_OFFER',
+                    '⏳ <b>Подписка закончится через {days_text}</b>\n\n'
+                    'Чтобы вы остались с нами, дарим <b>скидку {percent}%</b> на первое продление. '
+                    'Она действует до конца текущей подписки.',
+                ).format(days_text=self._first_renewal_days_text(days_left, user.language), percent=percent)
+
+                from aiogram.types import InlineKeyboardMarkup
+
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            build_miniapp_or_callback_button(
+                                text=texts.t(
+                                    'ADMIN_MONITORING_UI_BUILD_NOTIFICATION_PREVIEW_MESSAGE_019', '🎁 Получить скидку'
+                                ),
+                                callback_data=f'claim_discount_{offer.id}',
+                            )
+                        ],
+                        [
+                            build_subscription_extend_button(
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                                subscription.id,
+                            )
+                        ],
+                    ]
+                )
+
+                await self._send_message_with_logo(
+                    chat_id=user.telegram_id,
+                    text=message,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                    user=user,
+                )
+                await record_notification(db, user.id, subscription.id, self.FIRST_RENEWAL_NOTIFICATION_TYPE)
+                sent += 1
+            except (TelegramForbiddenError, TelegramBadRequest) as error:
+                logger.warning(
+                    'Скидка на первое продление: не доставлено',
+                    user_id=getattr(user, 'id', None),
+                    error=error,
+                )
+                await record_notification(db, user.id, subscription.id, self.FIRST_RENEWAL_NOTIFICATION_TYPE)
+            except Exception as error:
+                logger.error(
+                    'Скидка на первое продление: ошибка',
+                    user_id=getattr(user, 'id', None),
+                    error=error,
+                )
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
+        if sent:
+            logger.info('Скидка на первое продление: отправлено', sent=sent, percent=percent)
+            await self._log_monitoring_event(
+                db,
+                'first_renewal_discount_sent',
+                f'Скидка {percent}% на первое продление: {sent}',
+                {'sent': sent, 'percent': percent},
+            )
+
     async def _get_expiring_paid_subscriptions(self, db: AsyncSession, days_before: int) -> list[Subscription]:
         current_time = datetime.now(UTC)
         threshold_date = current_time + timedelta(days=days_before)
@@ -2384,17 +2550,17 @@ class MonitoringService:
                     'SUBSCRIPTION_EXPIRED_SECOND_WAVE',
                     (
                         '🔥 <b>Скидка {percent}% на продление{tariff_label}</b>\n\n'
-                        'Активируйте предложение, чтобы получить дополнительную скидку. '
-                        'Она суммируется с вашей промогруппой и действует до {expires_at}.'
+                        'Нажмите «Получить скидку» — она применится к следующей оплате. '
+                        'Действует до {expires_at}.'
                     ),
                 )
             else:
                 template = texts.get(
                     'SUBSCRIPTION_EXPIRED_THIRD_WAVE',
                     (
-                        '🎁 <b>Индивидуальная скидка {percent}%{tariff_label}</b>\n\n'
-                        'Прошло {trigger_days} дней без подписки — возвращайтесь и активируйте дополнительную скидку. '
-                        'Она суммируется с промогруппой и действует до {expires_at}.'
+                        '🎁 <b>Скидка {percent}% — только для вас{tariff_label}</b>\n\n'
+                        'Подписка неактивна уже {trigger_days} дней. Возвращайтесь со скидкой: '
+                        'нажмите «Получить скидку», и она применится к оплате. Действует до {expires_at}.'
                     ),
                 )
 

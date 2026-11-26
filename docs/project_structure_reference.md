@@ -1679,7 +1679,7 @@
   Классы: нет
   Функции: нет
 - `app/services/monitoring_service.py` — Python-модуль
-  Классы: `AutopayFailState` (2 методов), `MonitoringService` (54 методов)
+  Классы: `AutopayFailState` (2 методов), `MonitoringService` (57 методов)
   Функции: `decide_autopay_fail_notification` — Decide whether/what to send on a failed-autopay tick., `apply_autopay_fail_notification` — Mutate state to record that a notification with `reason` was just sent.
 - `app/services/mulenpay_service.py` — Python-модуль
   Классы: `MulenPayService` (10 методов)
@@ -2685,6 +2685,9 @@
 - `app/webapi/routes/subscriptions.py` — Python-модуль
   Классы: нет
   Функции: `list_subscriptions`, `get_subscription`, `create_subscription`, `extend_subscription_endpoint`, `add_subscription_traffic_endpoint`, `add_subscription_devices_endpoint`, `add_subscription_squad_endpoint`, `remove_subscription_squad_endpoint`, `delete_subscription` — Деактивировать подписку.
+- `app/webapi/routes/support.py` — Python-модуль
+  Классы: нет
+  Функции: `require_support_token`, `get_support_card`, `list_support_tickets`, `get_support_ticket`, `get_support_ticket_media`, `reply_to_support_ticket`, `update_support_ticket_status`, `update_support_ticket_priority`
 - `app/webapi/routes/tickets.py` — Python-модуль
   Классы: нет
   Функции: `list_tickets`, `get_ticket`, `update_ticket_status`, `update_ticket_priority`, `update_reply_block`, `clear_reply_block`, `reply_to_ticket`, `get_ticket_message_media`
@@ -2783,6 +2786,9 @@
   Функции: нет
 - `app/webapi/schemas/subscriptions.py` — Python-модуль
   Классы: `SubscriptionResponse`, `SubscriptionCreateRequest`, `SubscriptionExtendRequest`, `SubscriptionTrafficRequest`, `SubscriptionDevicesRequest`, `SubscriptionSquadRequest`
+  Функции: нет
+- `app/webapi/schemas/support.py` — Python-модуль
+  Классы: `SupportSubscription`, `SupportCard`, `SupportTicket`, `SupportAttachment`, `SupportTicketMessage`, `SupportTicketDetail`, `SupportReplyRequest`, `SupportReplyResponse`, `SupportStatusRequest`, `SupportPriorityRequest`
   Функции: нет
 - `app/webapi/schemas/tickets.py` — Python-модуль
   Классы: `TicketMediaItemResponse`, `TicketMessageResponse`, `TicketResponse`, `TicketStatusUpdateRequest`, `TicketPriorityUpdateRequest`, `TicketReplyBlockRequest`, `TicketReplyRequest`, `TicketReplyResponse`, `TicketMediaResponse`
@@ -5458,7 +5464,7 @@
   Функции: `test_daily_saved_device_price`, `test_daily_first_and_later_charge_agree_without_offer`, `test_daily_wallet_charge_uses_saved_policy`, `test_other_daily_resume_entrypoints_charge_saved_devices`, `test_offer_applies_only_to_initial_daily_charge`, `test_daily_checkout_and_later_charge_reject_ineligible_group_discount`, `test_selected_daily_public_checkout_prorates_monthly_unit_with_floor`
 - `tests/services/test_daily_subscription_traffic_reset.py` — Python-модуль
   Классы: нет
-  Функции: `test_defers_drop_when_panel_resets_and_user_over_limit` — MONTH + used 130 > нового лимита 100 → понижение ОТКЛАДЫВАЕТСЯ до сброса панели., `test_applies_drop_cleanly_when_user_under_limit` — MONTH + used 40 <= нового лимита 100 → лимит понижается, сброса used нет., `test_no_reset_tariff_resets_used_when_over_limit` — NO_RESET (панель сама не сбрасывает) + used 130 > 100 → лимит вниз + сброс used (clamp)., `test_forces_drop_after_grace_even_if_panel_resets` — MONTH, но докупка просрочена >40д → не ждём вечно: понижаем + добиваем used., `test_traffic_reset_only_loop_runs_processor` — #630055: с ВЫКЛЮЧЕННЫМИ суточными тарифами джоба сброса докупок всё равно, `test_managed_expiry_never_resets_spent_traffic_or_defers_expiry`
+  Функции: `test_defers_drop_when_panel_resets_and_user_over_limit` — MONTH + used 130 > нового лимита 100 → понижение ОТКЛАДЫВАЕТСЯ до сброса панели., `test_applies_drop_cleanly_when_user_under_limit` — MONTH + used 40 <= нового лимита 100 → лимит понижается, сброса used нет., `test_no_reset_tariff_resets_used_when_over_limit` — NO_RESET (панель сама не сбрасывает) + used 130 > 100 → лимит вниз + сброс used (clamp)., `test_forces_drop_after_grace_even_if_panel_resets` — MONTH, но докупка просрочена >40д → не ждём вечно: понижаем + добиваем used., `test_traffic_reset_only_loop_runs_processor` — #630055: с ВЫКЛЮЧЕННЫМИ суточными тарифами джоба сброса докупок всё равно, `test_managed_expiry_never_resets_spent_traffic_or_defers_expiry`, `test_expiry_waits_while_grace_is_open` — Open grace: the expired package stays until grace closes (sub 2375, 23.11.2026)., `test_managed_expiry_waits_while_grace_is_open`, `test_expiry_waits_when_grace_opens_before_row_lock` — The scan saw no grace, but grace opened before we locked the row.
 - `tests/services/test_daily_topup_resume_traffic_reset.py` — Python-модуль
   Классы: нет
   Функции: `test_topup_resume_resets_traffic_when_enabled` — RESET_TRAFFIC_ON_PAYMENT=true — списание после пополнения обнуляет счётчик и в панели, и у себя., `test_topup_resume_keeps_traffic_when_disabled` — Выключатель выключен — счётчик не трогаем (прежнее поведение)., `test_topup_resume_leaves_daily_reset_to_panel` — Панель обнуляет сама раз в сутки — свой сброс не добавляем, иначе две квоты за день., `test_topup_resume_lifts_panel_limit_after_paid_reset` — Подписка была в лимите трафика: после оплаты со сбросом лимит в панели снимается явно., `test_topup_resume_does_not_charge_limited_when_reset_impossible` — Списание счётчик не обнулит — деньги за сутки в лимите не берём, подписку не трогаем.
@@ -5495,6 +5501,9 @@
 - `tests/services/test_faq_category.py` — Python-модуль
   Классы: нет
   Функции: `test_create_stores_category_and_update_keeps_it_unless_passed`, `test_create_without_category_stores_null`
+- `tests/services/test_first_renewal_discount.py` — Python-модуль
+  Классы: нет
+  Функции: `enabled`, `test_disabled_flag_does_nothing`, `test_one_time_payer_gets_offer_with_claim_button`, `test_not_one_time_payer_is_skipped`, `test_already_sent_is_skipped`, `test_user_with_active_discount_is_skipped`, `test_email_only_user_is_skipped`, `test_blocked_bot_is_recorded_and_cycle_continues`, `test_days_text_plural`, `test_locale_key_present_and_has_no_vpn_word`
 - `tests/services/test_format_email_datetime.py` — Python-модуль
   Классы: нет
   Функции: `test_default_format_is_locale_independent` — The fallback shape must be ``DD.MM.YYYY, HH:MM`` — no month, `test_explicit_fmt_arg_overrides_settings` — Caller-provided ``fmt`` wins over the global setting — lets, `test_settings_override_takes_effect_without_restart` — An admin who updates ``EMAIL_DATE_FORMAT`` via system_settings, `test_empty_or_invalid_setting_falls_back_to_default` — Operator misconfiguration (empty / non-string) must not crash, `test_localizes_to_configured_timezone` — UTC datetime gets shifted to ``settings.TIMEZONE`` before formatting., `test_naive_datetime_is_treated_as_utc` — Some legacy paths still pass naive datetimes. Treat them as, `test_iso_string_is_parsed_and_reformatted` — Legacy callers that pre-isoformat'd their datetime get parsed, `test_unparseable_string_passes_through` — If the caller pre-formatted the string in some custom shape we, `test_empty_input_returns_placeholder` — ``None`` / empty must not render the literal Python repr or, `test_custom_placeholder_respected`, `test_non_datetime_non_string_input_returns_placeholder` — Garbage input (int, list, etc.) → placeholder. Defensive., `test_no_microseconds_in_output` — REGRESSION (2026-05-18): user saw, `test_no_offset_in_output` — Non-UTC TZ values also must not leak the offset into the email., `test_notification_delivery_service_uses_format_email_datetime` — ``notify_subscription_expiring`` and ``notify_autopay_success``, `test_auto_purchase_service_sends_machine_dates_to_the_cabinet` — Даты в WebSocket-событиях кабинета — не для человека., `test_helper_signature_is_stable` — The helper is called from 9+ production sites. Lock its
@@ -6576,6 +6585,9 @@
 - `tests/webapi/test_subscription_sync_routes.py` — Python-модуль
   Классы: нет
   Функции: `test_users_subscription_trial_calls_remnawave_sync`, `test_users_subscription_paid_calls_remnawave_sync`, `test_users_search_filter_adds_internal_id_for_int32`, `test_users_search_filter_skips_internal_id_for_out_of_int32`, `test_subscriptions_extend_calls_remnawave_sync`, `test_subscriptions_extend_rolls_back_when_sync_fails`, `test_subscriptions_extend_returns_500_when_rollback_fails`, `test_users_patch_subscription_delegates_to_post` — PATCH /users/{id}/subscription is a documented alias for POST and must route, `test_users_patch_subscription_route_returns_201` — The PATCH-as-upsert alias is intentionally annotated 201 (not the REST-typical 200), `test_users_subscription_replace_existing_restores_on_sync_failure` — When replace_existing=True and Remnawave sync fails, the user's prior subscription
+- `tests/webapi/test_support_routes.py` — Python-модуль
+  Классы: нет
+  Функции: `test_card_disallowed_ip_403`, `test_card_missing_token_401`, `test_card_wrong_token_401`, `test_card_x_support_token_header_accepted`, `test_card_token_unset_503`, `test_card_empty_allowlist_denies_all`, `test_card_unknown_user`, `test_card_exact_keys`, `test_card_grace_flag`, `test_card_telegram_id_not_int_422`, `test_support_routes_mounted_in_app`, `test_ticket_routes_require_token`, `test_list_maps_user_telegram_id`, `test_get_ticket_with_messages`, `test_get_ticket_missing_404`, `test_reply_delegates_and_returns_message_id`, `test_reply_text_too_long_422`, `test_reply_empty_422`, `test_status_delegates`, `test_status_invalid_422`, `test_priority_delegates`, `test_priority_invalid_422`, `test_card_grace_from_subscription_column`, `test_has_open_ticket_counts_answered`, `test_ticket_detail_lists_album_and_legacy_attachments`, `ticket_media`, `test_ticket_media_returns_image`, `test_ticket_media_rejects_pdf_with_image_filename`, `test_ticket_media_rejects_video_before_creating_bot`, `test_ticket_media_rejects_missing_or_ineligible_attachment`, `test_ticket_media_checks_reported_size_before_download`, `test_ticket_media_checks_download_size_when_reported_size_is_unknown`, `test_ticket_media_handles_telegram_error`, `test_ticket_media_times_out_during_download`, `test_ticket_media_requires_token_and_allowed_ip`
 - `tests/webapi/test_ticket_media_items.py` — Python-модуль
   Классы: нет
   Функции: `test_gallery_is_serialized`, `test_single_file_message_has_no_gallery`, `test_gallery_alone_still_counts_as_media` — У пачки может не быть основного file_id — сообщение всё равно с медиа., `test_broken_gallery_does_not_break_the_answer`
